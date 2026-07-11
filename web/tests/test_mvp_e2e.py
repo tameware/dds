@@ -207,6 +207,44 @@ class DdsMvpHtmlE2eTest(unittest.TestCase):
         finally:
             page.close()
 
+    def test_voice_input_button_is_present(self) -> None:
+        page, errors = self._open_page(self.site_dir.joinpath("dds_mvp.html").as_uri())
+        try:
+            button = page.get_by_role("button", name="Voice input")
+            self.assertTrue(button.is_visible())
+            status = page.locator("#voice-status")
+            self.assertTrue(status.is_visible())
+            self.assertEqual(errors, [])
+        finally:
+            page.close()
+
+    def test_spoken_deal_populates_form_and_computes_table(self) -> None:
+        """Inject parsed speech (no microphone) and verify WASM path still works."""
+        page, errors = self._open_page(self.site_dir.joinpath("dds_mvp.html").as_uri())
+        try:
+            page.get_by_role("button", name="Clear entries").click()
+            page.evaluate(
+                """() => {
+                const transcript =
+                  'N colon AQ85 dot AK976 dot 5 dot J87 ' +
+                  'JT dot QJ5432 dot Q9 dot KQ9 ' +
+                  '972 dot dot JT863 dot A6432 ' +
+                  'K643 dot T8 dot AK742 dot T5';
+                const parsed = parseSpokenDeal(transcript);
+                if (parsed.error) {
+                  throw new Error(parsed.error);
+                }
+                applyParsedDealToForm(parsed, { replace: true });
+              }"""
+            )
+            north_spades = page.locator("#north_spades").input_value()
+            self.assertEqual(north_spades, "AQ85")
+            self._run_double_dummy(page)
+            self._assert_part_score_table(page)
+            self.assertEqual(errors, [])
+        finally:
+            page.close()
+
 
 if __name__ == "__main__":
     unittest.main()

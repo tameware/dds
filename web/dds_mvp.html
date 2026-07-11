@@ -19,7 +19,7 @@
         DDS MVP
     </title>
 </head>
-<body onload="pageLoad()">
+<body onload="pageLoad(); pageLoadVoice();">
     <h1>
     Enter a 52-card deal using only these pips: <span id=valid-pips></span><br/>
     </h1>
@@ -29,6 +29,8 @@
     <button  onclick="fillFormWithEveryoneMakes3nTestData()">Everyone makes 3N test deal</button>
     <button  onclick="fillFormWithPartScoreTestData()">Part-score test deal</button>
     <button  onclick="rotateClockwise()">Rotate the hands clockwise</button>
+    <button id="voice-input-button" type="button" onclick="toggleVoiceInput()">Voice input</button>
+    <span id="voice-status" class="voice-status" aria-live="polite"></span>
 
     <br/>
     <br/>
@@ -123,5 +125,6 @@
     <script src="dds_mvp_wasm_bin.js"></script>
     <script src="dds_mvp_wasm.js"></script>
     <script src="dds_mvp.js"></script>
+    <script src="dds_mvp_voice.js"></script>
 </body>
 </html>

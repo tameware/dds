@@ -74,6 +74,17 @@ py_test(
     ],
 )
 
+py_test(
+    name = "voice_parser_test",
+    size = "small",
+    main = "tests/test_voice_parser.py",
+    srcs = ["tests/test_voice_parser.py"],
+    data = [
+        "dds_mvp_voice.js",
+        "tests/dds_mvp_voice_parser_node.mjs",
+    ],
+)
+
 # Stages wasm artifacts and runs Node smoke (~1–2s; wasm build is a separate analysis action).
 py_test(
     name = "dds_mvp_wasm_system_test",
@@ -86,6 +97,7 @@ py_test(
         "dds_mvp.css",
         "dds_mvp.html",
         "dds_mvp.js",
+        "dds_mvp_voice.js",
         "gen_wasm_bin_js.py",
         "patch_mvp_wasm.py",
         "tests/dds_mvp_wasm_node.mjs",
@@ -106,6 +118,7 @@ py_test(
         "dds_mvp.css",
         "dds_mvp.html",
         "dds_mvp.js",
+        "dds_mvp_voice.js",
         "gen_wasm_bin_js.py",
         "patch_mvp_wasm.py",
     ],
@@ -124,6 +137,7 @@ test_suite(
     name = "web_tests",
     tests = [
         ":dds_mvp_wasm_test",
+        ":voice_parser_test",
         ":wasm_scripts_test",
     ],
 )

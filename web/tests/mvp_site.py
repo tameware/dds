@@ -6,7 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
-STATIC_FILES = ("dds_mvp.html", "dds_mvp.css", "dds_mvp.js")
+STATIC_FILES = ("dds_mvp.html", "dds_mvp.css", "dds_mvp.js", "dds_mvp_voice.js")
 
 
 def runfiles_root() -> Path:

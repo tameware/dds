@@ -72,3 +72,18 @@
 td {
   text-align: center;
 }
+
+.voice-status {
+  display: inline-block;
+  margin-left: 12px;
+  font-size: 18px;
+  vertical-align: middle;
+}
+
+.voice-status-error {
+  color: #b71c1c;
+}
+
+#voice-input-button.voice-listening {
+  background-color: #ffcdd2;
+}

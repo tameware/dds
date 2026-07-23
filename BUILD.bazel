@@ -1,3 +1,5 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
 config_setting(
     name = "build_macos",
     constraint_values = [
@@ -72,6 +74,24 @@ config_setting(
 config_setting(
     name = "tt_reset_debug",
     define_values = {"tt_reset_debug": "true"},
+)
+
+# Opt-in: compile for the exact CPU of the build machine (-mcpu=native on
+# macOS) instead of the portable generic tuning. For users seeking top
+# performance who run the binaries on the machine they compile on; the
+# resulting binaries are NOT portable across CPU generations.
+# Usage: bazel build --//:native_cpu=true ...  (or --config=native)
+bool_flag(
+    name = "native_cpu",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "native_cpu_macos",
+    constraint_values = [
+        "@platforms//os:osx",
+    ],
+    flag_values = {":native_cpu": "true"},
 )
 
 # Matches cc_* targets built under the wasm_cc_binary platform transition.

@@ -4,10 +4,6 @@ DDS_CPPOPTS = select({
     "//:build_macos": [
         "-O3",
         "-flto=thin",
-        # Tune for the build machine's CPU (e.g. Apple Silicon core scheduling)
-        # instead of the generic model. Benchmark experiment; binaries are not
-        # portable across CPU generations.
-        "-mcpu=native",
         "-fPIC",
         "-Wpedantic",
         "-Wall",
@@ -16,7 +12,6 @@ DDS_CPPOPTS = select({
     ],
     "//:debug_build_macos": [
         "-g",
-        "-mtune=generic",
         "-fPIC",
         "-Wpedantic",
         "-Wall",
@@ -67,6 +62,13 @@ DDS_CPPOPTS = select({
     "//conditions:default": [
         "-std=c++20"
     ],
+}) + select({
+    # CPU tuning (macOS). Default stays portable across CPU generations;
+    # --//:native_cpu=true (or --config=native) compiles for the exact CPU of
+    # the build machine, for users who run binaries where they compile them.
+    "//:native_cpu_macos": ["-mcpu=native"],
+    "//:build_macos": ["-mtune=generic"],
+    "//conditions:default": [],
 })
 
 DDS_LOCAL_DEFINES = select({

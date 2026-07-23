@@ -1,0 +1,28 @@
+load("//:CPPVARIABLES.bzl", "DDS_CPPOPTS")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load(":native_cpu_test.bzl", "default_is_portable_test", "native_cpu_opt_in_test")
+
+# Fixture compiled with the shared flag set; the analysis tests below inspect
+# its compile command line. Only built as a dependency of those tests.
+cc_library(
+    name = "cppopts_fixture",
+    srcs = ["fixture.cpp"],
+    copts = DDS_CPPOPTS,
+    tags = ["manual"],
+)
+
+# The flag assertions are macOS-specific (the native-CPU opt-in currently
+# only affects the macOS toolchain flags).
+default_is_portable_test(
+    name = "default_is_portable_test",
+    size = "small",
+    target_under_test = ":cppopts_fixture",
+    target_compatible_with = ["@platforms//os:osx"],
+)
+
+native_cpu_opt_in_test(
+    name = "native_cpu_opt_in_test",
+    size = "small",
+    target_under_test = ":cppopts_fixture",
+    target_compatible_with = ["@platforms//os:osx"],
+)

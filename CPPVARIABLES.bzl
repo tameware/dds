@@ -4,7 +4,10 @@ DDS_CPPOPTS = select({
     "//:build_macos": [
         "-O3",
         "-flto=thin",
-        "-mtune=generic",
+        # Tune for the build machine's CPU (e.g. Apple Silicon core scheduling)
+        # instead of the generic model. Benchmark experiment; binaries are not
+        # portable across CPU generations.
+        "-mcpu=native",
         "-fPIC",
         "-Wpedantic",
         "-Wall",

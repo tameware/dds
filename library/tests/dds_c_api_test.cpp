@@ -191,7 +191,8 @@ class DdsCApiConfiguredContext : public testing::TestWithParam<int> {};
 
 TEST_P(DdsCApiConfiguredContext, SolvesReferenceBoard)
 {
-    // tt_kind 0 = Small, 1 = Large; both must produce a usable context.
+    // tt_kind 0 = Small, 1 = Large, 2 = Pattern; all must produce a usable
+    // context.
     DDS_C_SOLVER_CTX ctx = dds_c_create_solvercontext(GetParam(), 0, 0);
     ASSERT_NE(ctx, nullptr);
 
@@ -200,8 +201,22 @@ TEST_P(DdsCApiConfiguredContext, SolvesReferenceBoard)
     dds_c_destroy_solvercontext(ctx);
 }
 
-INSTANTIATE_TEST_SUITE_P(BothTtKinds, DdsCApiConfiguredContext,
-                         testing::Values(0, 1));
+INSTANTIATE_TEST_SUITE_P(AllTtKinds, DdsCApiConfiguredContext,
+                         testing::Values(0, 1, 2));
+
+TEST(DdsCApiTtConfiguration, ReconfiguringToPatternKindKeepsSolving)
+{
+    DDS_C_SOLVER_CTX ctx = dds_c_create_solvercontext_default();
+    ASSERT_NE(ctx, nullptr);
+    ASSERT_EQ(SolveReference(ctx), kExpectedTricks);
+
+    dds_c_configure_tt(ctx, 2, 8, 16);
+    EXPECT_EQ(SolveReference(ctx), kExpectedTricks);
+    dds_c_clear_tt(ctx);
+    EXPECT_EQ(SolveReference(ctx), kExpectedTricks);
+
+    dds_c_destroy_solvercontext(ctx);
+}
 
 TEST(DdsCApiTtConfiguration, ContextRemainsUsableAfterReconfiguration)
 {

@@ -1,14 +1,14 @@
 ---
 capability: transposition-table
 owners: [trans_table]
-last-updated: 2026-07-18
+last-updated: 2026-09-08
 ---
 
 # Transposition Table
 
 > **Specs vs. doxygen.** The `TransTable` interface, `NodeCards` layout, and each
 > method's contract are documented inline in `trans_table.hpp`. This spec records
-> the capability-wide facts: the two implementations, the memory/reset model, and
+> the capability-wide facts: the three implementations, the memory/reset model, and
 > how the table relates to the owning context.
 
 ## Purpose
@@ -18,18 +18,31 @@ and move-ordering hints for a position) so the alpha-beta search avoids
 re-solving positions it has already seen. It is the single biggest memory
 consumer in a solve and the main reason reusing a [solver-context](solver-context.md) across
 solves is worthwhile. This capability provides the abstract table interface and
-its two concrete strategies, trading memory against speed.
+its three concrete strategies, trading memory against speed.
 
 ## Behaviour & invariants
 
 > Per-method signatures live in the header doxygen; these are the whole-table
 > guarantees.
 
-- **One interface, two implementations.** `TransTable` is an abstract base;
-  `TransTableL` (large) is the full-featured, faster, paged-memory table with
-  harvesting, and `TransTableS` (small) is the pool-based, lower-memory, somewhat
-  slower table. Which one a context uses is chosen by `TTKind::{Large,Small}` in
-  `SolverConfig` (default `Large`) — see [solver-context](solver-context.md).
+- **One interface, three implementations.** `TransTable` is an abstract base.
+  `TransTableP` (pattern, the default) keys a position by its suit-length shape
+  and stores, under each shape, the *relative-rank patterns* that decided the
+  result (the cards at or above the lowest winning rank per suit, by owner), an
+  approach taken from macroxue's bridge-solver. A shape holds any number of
+  patterns, ordered most general first and bucketed by the owner of the first
+  relevant suit's top card, so a lookup scans only the buckets it can match.
+  `TransTableL` (large) is the paged-memory table with harvesting and a fixed
+  per-shape entry capacity; `TransTableS` (small) is the pool-based, lower-memory,
+  somewhat slower table. Which one a context uses is chosen by
+  `TTKind::{Pattern,Large,Small}` in `SolverConfig` (default `Pattern`) — see
+  [solver-context](solver-context.md). The env var `DDS_TT_KIND`
+  (`small|large|pattern`) overrides the configured kind.
+- **Pattern vs. Large.** On random deals the two are at parity; on void-heavy
+  ("freak") deals and under tight memory limits Pattern is markedly faster,
+  because Large's fixed per-shape blocks overflow and its lookups degrade to
+  long linear scans, while Pattern's unbounded per-shape lists and generic-first
+  ordering keep lookups short. Both produce identical results.
 - **Not thread-safe.** A table instance must be accessed from a single solver
   thread. Concurrency comes from one table per context/worker, never a shared
   table under a lock.
@@ -41,6 +54,11 @@ its two concrete strategies, trading memory against speed.
   `set_memory_default` is a soft limit (may briefly exceed, triggering
   cleanup/harvesting) and `set_memory_maximum` is a hard cap. On `TransTableS`,
   `set_memory_default` is a **no-op**; only `set_memory_maximum` is enforced.
+  `TransTableP` likewise enforces only the maximum (the default merely floors
+  it): it grows on demand and, when the next allocation would exceed the
+  maximum, clears the whole table (`ResetReason::MemoryExhausted`) and refills
+  rather than harvesting. Freed blocks are pooled per size class, so a reset
+  does not return memory to the allocator until `return_all_memory()`.
   The header documents `0` as "unlimited" for the default limit, but `TransTableL`
   does not implement it that way — `set_memory_default(0)` yields
   `pages_default_ == 0`, and the next `reset_memory` then frees *every* pooled
@@ -78,6 +96,7 @@ its two concrete strategies, trading memory against speed.
 
 - `library/src/trans_table/trans_table.hpp` — `TransTable` abstract interface,
   `NodeCards`, `ResetReason`. Doxygen documents every method.
+- `library/src/trans_table/trans_table_p.{hpp,cpp}` — `TransTableP` (pattern, default).
 - `library/src/trans_table/trans_table_l.{hpp,cpp}` — `TransTableL` (large/paged).
 - `library/src/trans_table/trans_table_s.{hpp,cpp}` — `TransTableS` (small/pool).
 - Build targets: `//library/src/trans_table:{trans_table,testable_trans_table}`.

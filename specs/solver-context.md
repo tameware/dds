@@ -40,7 +40,7 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
   reuse comes from reusing the *same context* across solves, not from a shared
   global. See [transposition-table](transposition-table.md).
 - **TT configuration is `SolverConfig` + optional env overrides.** `SolverConfig`
-  carries `tt_kind_` (`TTKind::{Small,Large}`, default `Large`) and default/max MB.
+  carries `tt_kind_` (`TTKind::{Small,Large,Pattern}`, default `Pattern`) and default/max MB.
   `configure_tt(kind, defMB, maxMB)` persists a new config and applies it to an
   existing TT (resize in place, or recreate if the kind changes).   Env overrides when > 0: `DDS_TT_DEFAULT_MB` **replaces** the configured default
   MB; `DDS_TT_LIMIT_MB` caps the maximum.

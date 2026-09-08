@@ -1,0 +1,693 @@
+/*
+   DDS, a bridge double dummy solver.
+
+   Copyright (C) 2006-2014 by Bo Haglund /
+   2014-2018 by Bo Haglund & Soren Hein.
+
+   See LICENSE and README.
+*/
+
+/*
+   Shape → pattern transposition table.
+
+   Positions are keyed by (trick, hand, suit-length shape). Under each key the
+   table holds patterns. A pattern records, for the cards that decided a
+   search result (all cards at or above the lowest winning rank in each
+   suit), which hand holds each of them, in *relative* rank order — the same
+   2-bits-per-card encoding TransTableL uses, restricted to the top twelve
+   cards of every suit (the thirteenth is implied by the shape).
+
+   A position matches a pattern when it agrees with it on every relevant
+   card. Re-adding a pattern that is already stored intersects the bounds.
+
+   The patterns of a shape live in one contiguous array, grouped into buckets
+   by the owner of the top card of the pattern's first relevant suit, and
+   within a bucket ordered by generality (fewest relevant cards first, newest
+   first among equals): general patterns match the most positions, so trying
+   them first gives the earliest cut-offs. A lookup scans, with a fixed
+   stride, only the buckets its own top cards allow.
+
+   Experiments with a subsumption tree (storing more specific patterns
+   beneath more general ones, as bridge-solver does) trimmed the number of
+   patterns visited per lookup by about 15% but made every visit slower,
+   since skipping a subtree needs its size, a dependent load that serialises
+   the scan. The flat array was faster on every workload tried.
+*/
+
+#include "trans_table_p.hpp"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstring>
+#include <new>
+
+#include <api/dds_constants.hpp>
+
+namespace
+{
+
+constexpr std::size_t MiB = 1024u * 1024u;
+constexpr std::uint64_t HashMultiplier = 0x9E3779B97F4A7C15ull;
+
+/// Fibonacci hashing: the top bits of the product are well mixed, the low
+/// bits are not. table_size must be a power of two.
+auto hash_slot(std::uint64_t key, std::size_t table_size) -> std::size_t
+{
+    const int bits = std::countr_zero(table_size);
+    return static_cast<std::size_t>((key * HashMultiplier) >> (64 - bits));
+}
+
+} // namespace
+
+
+TransTableP::TransTableP() = default;
+
+
+TransTableP::~TransTableP()
+{
+    return_all_memory();
+}
+
+
+auto TransTableP::init(const int hand_lookup[][15]) -> void
+{
+    // For every 13-bit set of remaining cards in a suit, record which hand
+    // holds each remaining card, top card first, 2 bits per card, and spread
+    // the result over the three pattern words in the suit's own byte.
+    ownership_.assign(8192, Ownership{});
+    std::vector<std::array<std::uint32_t, DDS_SUITS>> ranks(8192);
+
+    unsigned top_bit_rank = 1;
+    unsigned top_bit_no = 2;
+    for (unsigned ind = 1; ind < 8192; ++ind) {
+        if (ind >= (top_bit_rank << 1)) {
+            top_bit_rank <<= 1;
+            ++top_bit_no;
+        }
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            ranks[ind][s] = (ranks[ind ^ top_bit_rank][s] >> 2) |
+                (static_cast<std::uint32_t>(hand_lookup[s][top_bit_no]) << 24);
+            for (int k = 0; k < PatternWords; ++k) {
+                const std::uint32_t top_byte =
+                    (ranks[ind][s] << (6 + 8 * k)) & 0xff000000u;
+                ownership_[ind].set[s][k] = top_byte >> (8 * s);
+            }
+        }
+    }
+}
+
+
+auto TransTableP::set_memory_default(const int megabytes) -> void
+{
+    default_bytes_ = static_cast<std::size_t>(std::max(megabytes, 0)) * MiB;
+}
+
+
+auto TransTableP::set_memory_maximum(const int megabytes) -> void
+{
+    maximum_bytes_ = static_cast<std::size_t>(std::max(megabytes, 0)) * MiB;
+}
+
+
+auto TransTableP::make_tt() -> void
+{
+    if (default_bytes_ == 0) {
+        default_bytes_ = static_cast<std::size_t>(THREADMEM_LARGE_DEF_MB) * MiB;
+    }
+    if (maximum_bytes_ == 0) {
+        maximum_bytes_ = static_cast<std::size_t>(THREADMEM_LARGE_MAX_MB) * MiB;
+    }
+    maximum_bytes_ = std::max(maximum_bytes_, default_bytes_);
+
+    return_all_memory();
+    shapes_.assign(InitialShapes, ShapeSlot{});
+}
+
+
+auto TransTableP::reset_memory(const ResetReason reason) -> void
+{
+    if (shapes_.empty()) {
+        return;
+    }
+    ++reset_counts_[static_cast<int>(reason)];
+
+    release_trees();
+    if (reason == ResetReason::MemoryExhausted) {
+        free_spare_trees();
+    }
+    std::vector<ShapeSlot> fresh(InitialShapes);
+    shapes_.swap(fresh);
+}
+
+
+auto TransTableP::return_all_memory() -> void
+{
+    release_trees();
+    free_spare_trees();
+    std::vector<ShapeSlot>().swap(shapes_);
+}
+
+
+auto TransTableP::dynamic_bytes() const -> std::size_t
+{
+    return tree_bytes_ + shapes_.capacity() * sizeof(ShapeSlot);
+}
+
+
+auto TransTableP::memory_in_use() const -> double
+{
+    const std::size_t bytes = ownership_.capacity() * sizeof(Ownership) + dynamic_bytes();
+    return static_cast<double>(bytes) / 1024.0;
+}
+
+
+auto TransTableP::node_count() const -> std::size_t
+{
+    return node_count_;
+}
+
+
+auto TransTableP::shape_count() const -> std::size_t
+{
+    return shape_count_;
+}
+
+
+// ---------------------------------------------------------------------------
+// Keys and pattern encoding
+// ---------------------------------------------------------------------------
+
+auto TransTableP::shape_key(const int trick, const int hand, const int hand_dist[])
+    -> std::uint64_t
+{
+    // hand_dist holds 12 bits per hand (spades, hearts, diamonds; clubs are
+    // implied by the trick). trick + 1 keeps the key non-zero.
+    return (static_cast<std::uint64_t>(trick + 1) << 50) |
+        (static_cast<std::uint64_t>(hand) << 48) |
+        (static_cast<std::uint64_t>(hand_dist[0]) << 36) |
+        (static_cast<std::uint64_t>(hand_dist[1]) << 24) |
+        (static_cast<std::uint64_t>(hand_dist[2]) << 12) |
+        static_cast<std::uint64_t>(hand_dist[3]);
+}
+
+
+auto TransTableP::mask_word(const int suit, const int relevant, const int word) -> std::uint32_t
+{
+    const int cards_in_word = std::clamp(relevant - 4 * word, 0, 4);
+    if (cards_in_word == 0) {
+        return 0;
+    }
+    const std::uint32_t byte = (0xffu << (8 - 2 * cards_in_word)) & 0xffu;
+    return byte << (24 - 8 * suit);
+}
+
+
+auto TransTableP::position_set(const unsigned short aggr_target[], std::uint32_t set[]) const
+    -> void
+{
+    for (int k = 0; k < PatternWords; ++k) {
+        set[k] = ownership_[aggr_target[0]].set[0][k] |
+            ownership_[aggr_target[1]].set[1][k] |
+            ownership_[aggr_target[2]].set[2][k] |
+            ownership_[aggr_target[3]].set[3][k];
+    }
+}
+
+
+auto TransTableP::make_pattern(
+    const unsigned short aggr_target[],
+    const unsigned short win_ranks[],
+    PatternKey& key,
+    NodeCards& cards) const -> void
+{
+    key = PatternKey{};
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        const unsigned w = win_ranks[s];
+        cards.least_win[s] = 0;
+        if (w == 0) {
+            continue;
+        }
+        // Everything at or above the lowest winning rank is relevant.
+        const unsigned lowest = w & (0u - w);
+        const unsigned relevant = aggr_target[s] & ~(lowest - 1u);
+        if (relevant == 0) {
+            continue;
+        }
+        const int count = std::popcount(relevant);
+        cards.least_win[s] = static_cast<char>(count);
+        for (int k = 0; k < PatternWords; ++k) {
+            key.word[k].set |= ownership_[relevant].set[s][k];
+            key.word[k].mask |= mask_word(s, count, k);
+        }
+    }
+}
+
+
+auto TransTableP::same_pattern(const PatternKey& a, const PatternKey& b) -> bool
+{
+    for (int k = 0; k < PatternWords; ++k) {
+        if (a.word[k].set != b.word[k].set || a.word[k].mask != b.word[k].mask) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+auto TransTableP::matches(const PatternKey& pattern, const std::uint32_t set[]) -> bool
+{
+    // The first word (top four cards of every suit) decides most mismatches;
+    // test it alone before touching the rest of the node.
+    if ((pattern.word[0].set ^ set[0]) & pattern.word[0].mask) {
+        return false;
+    }
+    return (((pattern.word[1].set ^ set[1]) & pattern.word[1].mask) |
+            ((pattern.word[2].set ^ set[2]) & pattern.word[2].mask)) == 0;
+}
+
+
+auto TransTableP::weight_of(const PatternKey& key) -> std::uint32_t
+{
+    // Two mask bits per relevant card.
+    return static_cast<std::uint32_t>(
+        std::popcount(key.word[0].mask) + std::popcount(key.word[1].mask) +
+        std::popcount(key.word[2].mask)) / 2u;
+}
+
+
+auto TransTableP::bucket_of(const PatternKey& key) -> int
+{
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        const int shift = 24 - 8 * s;
+        if ((key.word[0].mask >> shift) & 0xffu) {
+            const int owner = static_cast<int>((key.word[0].set >> (shift + 6)) & 3u);
+            return 1 + DDS_HANDS * s + owner;
+        }
+    }
+    return 0;
+}
+
+
+// ---------------------------------------------------------------------------
+// Storage
+// ---------------------------------------------------------------------------
+
+auto TransTableP::PatternTree::insert(const std::size_t at, const PatternNode& node) -> void
+{
+    PatternNode* p = nodes() + at;
+    std::memmove(p + 1, p, (size - at) * sizeof(PatternNode));
+    *p = node;
+    ++size;
+}
+
+
+auto TransTableP::size_class(const std::size_t capacity) -> int
+{
+    return std::countr_zero(capacity / InitialTreeNodes);
+}
+
+
+auto TransTableP::acquire_tree(const std::size_t capacity) -> PatternTree*
+{
+    // Capacities are InitialTreeNodes << class; tree_bytes_ counts spare
+    // blocks too, so reusing one costs nothing against the budget.
+    auto& spares = spare_trees_[size_class(capacity)];
+    PatternTree* tree;
+    if (!spares.empty()) {
+        tree = spares.back();
+        spares.pop_back();
+    } else {
+        tree = static_cast<PatternTree*>(
+            ::operator new(PatternTree::bytes_for(capacity), std::align_val_t{CacheLine}));
+        tree_bytes_ += PatternTree::bytes_for(capacity);
+    }
+    std::memset(tree, 0, sizeof(PatternTree));
+    tree->capacity = static_cast<std::uint32_t>(capacity);
+    return tree;
+}
+
+
+auto TransTableP::release_tree(PatternTree* tree) -> void
+{
+    spare_trees_[size_class(tree->capacity)].push_back(tree);
+}
+
+
+auto TransTableP::release_trees() -> void
+{
+    for (ShapeSlot& slot : shapes_) {
+        if (slot.tree) {
+            release_tree(slot.tree);
+            slot.tree = nullptr;
+        }
+    }
+    shape_count_ = 0;
+    node_count_ = 0;
+}
+
+
+auto TransTableP::free_spare_trees() -> void
+{
+    for (auto& spares : spare_trees_) {
+        for (PatternTree* tree : spares) {
+            tree_bytes_ -= PatternTree::bytes_for(tree->capacity);
+            ::operator delete(tree, std::align_val_t{CacheLine});
+        }
+        spares.clear();
+    }
+}
+
+
+auto TransTableP::reserve_one_more(ShapeSlot& slot) -> bool
+{
+    PatternTree* old = slot.tree;
+    const std::size_t old_capacity = old ? old->capacity : 0;
+    if (old && old->size < old_capacity) {
+        return true;
+    }
+    const std::size_t wanted = std::max(InitialTreeNodes, old_capacity * 2);
+    if (spare_trees_[size_class(wanted)].empty() &&
+        dynamic_bytes() + PatternTree::bytes_for(wanted) > maximum_bytes_) {
+        reset_memory(ResetReason::MemoryExhausted);
+        return false;
+    }
+    PatternTree* fresh = acquire_tree(wanted);
+    if (old) {
+        std::memcpy(fresh, old, PatternTree::bytes_for(old->size));
+        fresh->capacity = static_cast<std::uint32_t>(wanted);
+        release_tree(old);
+    }
+    slot.tree = fresh;
+    return true;
+}
+
+
+auto TransTableP::find_shape(const std::uint64_t key) const -> std::size_t
+{
+    if (shapes_.empty()) {
+        return NoSlot;
+    }
+    const std::size_t mask = shapes_.size() - 1;
+    for (std::size_t i = hash_slot(key, shapes_.size()); shapes_[i].key != 0; i = (i + 1) & mask) {
+        if (shapes_[i].key == key) {
+            return i;
+        }
+    }
+    return NoSlot;
+}
+
+
+auto TransTableP::grow_shapes() -> void
+{
+    const std::size_t new_size = shapes_.size() * 2;
+    if (new_size * sizeof(ShapeSlot) + tree_bytes_ > maximum_bytes_) {
+        reset_memory(ResetReason::MemoryExhausted);
+        return;
+    }
+    std::vector<ShapeSlot> fresh(new_size);
+    const std::size_t mask = new_size - 1;
+    for (const ShapeSlot& slot : shapes_) {
+        if (slot.key == 0) {
+            continue;
+        }
+        std::size_t i = hash_slot(slot.key, new_size);
+        while (fresh[i].key != 0) {
+            i = (i + 1) & mask;
+        }
+        fresh[i] = slot;
+    }
+    shapes_.swap(fresh);
+}
+
+
+auto TransTableP::find_or_insert_shape(const std::uint64_t key) -> std::size_t
+{
+    if (shape_count_ * 2 >= shapes_.size()) {
+        grow_shapes();
+    }
+    const std::size_t mask = shapes_.size() - 1;
+    std::size_t i = hash_slot(key, shapes_.size());
+    while (shapes_[i].key != 0 && shapes_[i].key != key) {
+        i = (i + 1) & mask;
+    }
+    if (shapes_[i].key == 0) {
+        shapes_[i].key = key;
+        ++shape_count_;
+    }
+    return i;
+}
+
+
+// ---------------------------------------------------------------------------
+// Lookup
+// ---------------------------------------------------------------------------
+
+auto TransTableP::lookup(
+    const int trick,
+    const int hand,
+    const unsigned short aggr_target[],
+    const int hand_dist[],
+    const int limit,
+    bool& lower_flag) -> NodeCards const*
+{
+    if (shapes_.empty() || trick < 0 || trick >= MaxTricks) {
+        return nullptr;
+    }
+    const std::uint64_t key = shape_key(trick, hand, hand_dist);
+    const std::size_t slot = find_shape(key);
+    last_key_[trick][hand] = key;
+    last_slot_[trick][hand] = slot;
+    if (slot == NoSlot || shapes_[slot].tree == nullptr) {
+        return nullptr;
+    }
+
+    std::uint32_t set[PatternWords];
+    position_set(aggr_target, set);
+    const PatternTree& tree = *shapes_[slot].tree;
+    if (NodeCards const* found = find_cut(tree, 0, tree.bucket_end[0], set, limit, lower_flag)) {
+        return found;
+    }
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        const int owner = static_cast<int>((set[0] >> (30 - 8 * s)) & 3u);
+        const int bucket = 1 + DDS_HANDS * s + owner;
+        if (NodeCards const* found = find_cut(
+                tree, tree.bucket_end[bucket - 1], tree.bucket_end[bucket], set, limit, lower_flag)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+
+auto TransTableP::find_cut(
+    const PatternTree& tree,
+    const std::size_t begin,
+    const std::size_t end,
+    const std::uint32_t set[],
+    const int limit,
+    bool& lower_flag) -> NodeCards const*
+{
+    for (std::size_t i = begin; i < end; ++i) {
+        const PatternNode& node = tree[i];
+        if (!matches(node.key, set)) {
+            continue;
+        }
+        if (node.cards.lower_bound > limit) {
+            lower_flag = true;
+            return &node.cards;
+        }
+        if (node.cards.upper_bound <= limit) {
+            lower_flag = false;
+            return &node.cards;
+        }
+    }
+    return nullptr;
+}
+
+
+// ---------------------------------------------------------------------------
+// Insertion
+// ---------------------------------------------------------------------------
+
+auto TransTableP::add(
+    const int trick,
+    const int hand,
+    const unsigned short aggr_target[],
+    const unsigned short win_ranks[],
+    const NodeCards& first,
+    const bool flag) -> void
+{
+    if (shapes_.empty() || trick < 0 || trick >= MaxTricks) {
+        return;
+    }
+    const std::uint64_t key = last_key_[trick][hand];
+    if (key == 0) {
+        return;   // add() without a preceding lookup() for this trick/hand
+    }
+
+    PatternKey pattern;
+    NodeCards cards = first;
+    make_pattern(aggr_target, win_ranks, pattern, cards);
+    if (!flag) {
+        cards.best_move_suit = 0;
+        cards.best_move_rank = 0;
+    }
+
+    // The preceding lookup() usually found the slot already; it is only stale
+    // if the table was rebuilt or reset in between.
+    std::size_t slot = last_slot_[trick][hand];
+    if (slot == NoSlot || slot >= shapes_.size() || shapes_[slot].key != key) {
+        slot = find_or_insert_shape(key);
+    }
+    if (!reserve_one_more(shapes_[slot])) {
+        return;   // the table was just reset; drop this entry
+    }
+    PatternTree& tree = *shapes_[slot].tree;
+
+    // Within its bucket the pattern goes before the first one with more
+    // relevant cards; an identical pattern can only sit among those with
+    // exactly as many.
+    const int bucket = bucket_of(pattern);
+    const std::uint32_t weight = weight_of(pattern);
+    std::size_t at = tree.bucket_begin(bucket);
+    const std::size_t end = tree.bucket_end[bucket];
+    for (; at < end; ++at) {
+        const std::uint32_t stored = weight_of(tree[at].key);
+        if (stored > weight) {
+            break;
+        }
+        if (stored == weight && same_pattern(tree[at].key, pattern)) {
+            tighten(tree[at].cards, cards, flag);
+            return;
+        }
+    }
+
+    tree.insert(at, PatternNode{pattern, cards});
+    for (int b = bucket; b < BucketCount; ++b) {
+        ++tree.bucket_end[b];
+    }
+    ++node_count_;
+}
+
+
+auto TransTableP::tighten(NodeCards& stored, const NodeCards& cards, const bool flag) -> void
+{
+    stored.lower_bound = std::max(stored.lower_bound, cards.lower_bound);
+    stored.upper_bound = std::min(stored.upper_bound, cards.upper_bound);
+    if (flag) {
+        stored.best_move_suit = cards.best_move_suit;
+        stored.best_move_rank = cards.best_move_rank;
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+auto TransTableP::print_suits(std::ofstream& fout, const int trick, const int hand) const -> void
+{
+    std::size_t shapes = 0;
+    std::size_t patterns = 0;
+    for (const ShapeSlot& slot : shapes_) {
+        if (slot.key == 0 || static_cast<int>((slot.key >> 50) - 1) != trick ||
+            static_cast<int>((slot.key >> 48) & 3) != hand) {
+            continue;
+        }
+        ++shapes;
+        patterns += slot.tree ? slot.tree->size : 0;
+    }
+    fout << "Trick " << trick << " hand " << hand << ": " << shapes
+         << " shapes, " << patterns << " patterns\n";
+}
+
+
+auto TransTableP::print_all_suits(std::ofstream& fout) const -> void
+{
+    for (int t = 0; t < MaxTricks; ++t) {
+        for (int h = 0; h < DDS_HANDS; ++h) {
+            print_suits(fout, t, h);
+        }
+    }
+}
+
+
+auto TransTableP::print_suit_stats(std::ofstream& fout, const int trick, const int hand) const
+    -> void
+{
+    print_suits(fout, trick, hand);
+}
+
+
+auto TransTableP::print_all_suit_stats(std::ofstream& fout) const -> void
+{
+    print_all_suits(fout);
+}
+
+
+auto TransTableP::print_summary_suit_stats(std::ofstream& fout) const -> void
+{
+    fout << "Shapes: " << shape_count_ << "\n";
+}
+
+
+auto TransTableP::print_entries_dist(
+    std::ofstream& fout, const int trick, const int hand, const int hand_dist[]) const -> void
+{
+    const std::size_t slot = find_shape(shape_key(trick, hand, hand_dist));
+    fout << "Trick " << trick << " hand " << hand << ": "
+         << (slot == NoSlot || !shapes_[slot].tree ? 0 : shapes_[slot].tree->size) << " patterns\n";
+}
+
+
+auto TransTableP::print_entries_dist_and_cards(
+    std::ofstream& fout,
+    const int trick,
+    const int hand,
+    const unsigned short /*aggr_target*/[],
+    const int hand_dist[]) const -> void
+{
+    print_entries_dist(fout, trick, hand, hand_dist);
+}
+
+
+auto TransTableP::print_entries(std::ofstream& fout, const int trick, const int hand) const
+    -> void
+{
+    print_suits(fout, trick, hand);
+}
+
+
+auto TransTableP::print_all_entries(std::ofstream& fout) const -> void
+{
+    print_all_suits(fout);
+}
+
+
+auto TransTableP::print_entry_stats(std::ofstream& fout, const int trick, const int hand) const
+    -> void
+{
+    print_suits(fout, trick, hand);
+}
+
+
+auto TransTableP::print_all_entry_stats(std::ofstream& fout) const -> void
+{
+    print_all_suits(fout);
+}
+
+
+auto TransTableP::print_summary_entry_stats(std::ofstream& fout) const -> void
+{
+    fout << "Patterns: " << node_count() << ", shapes: " << shape_count_
+         << ", memory KB: " << memory_in_use() << "\n";
+}
+
+
+auto TransTableP::print_reset_stats(std::ofstream& fout) const -> void
+{
+    for (int r = 0; r < ResetReasonCount; ++r) {
+        fout << "Reset reason " << r << ": " << reset_counts_[r] << "\n";
+    }
+}

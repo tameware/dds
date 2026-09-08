@@ -1,0 +1,851 @@
+/// @file trans_table_p_test.cpp
+/// @brief White-box tests for TransTableP, the shape → pattern transposition table.
+///
+/// TransTableP stores, per (tricks, hand, suit-length shape), relative-rank
+/// ownership patterns ordered by generality (bridge-solver's "shape →
+/// pattern" cache). These tests pin down the matching semantics, the
+/// bound-tightening and ordering rules, memory limits, and equivalence of
+/// cut decisions with the legacy TransTableL for small workloads.
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <api/dll.h>
+#include <trans_table/trans_table_l.hpp>
+#include <trans_table/trans_table_p.hpp>
+
+namespace {
+
+constexpr const char* AllRanks = "AKQJT98765432";
+
+auto rank_of(char c) -> int
+{
+    switch (c) {
+    case 'A': return 14;
+    case 'K': return 13;
+    case 'Q': return 12;
+    case 'J': return 11;
+    case 'T': return 10;
+    default: return c - '0';
+    }
+}
+
+auto seat_of(char c) -> int
+{
+    switch (c) {
+    case 'N': return 0;
+    case 'E': return 1;
+    case 'S': return 2;
+    default: return 3;
+    }
+}
+
+/// Bitmask over ranks 2..14 (bit r-2) for the listed rank characters.
+auto ranks(const std::string& text) -> unsigned short
+{
+    unsigned short bits = 0;
+    for (char c : text) {
+        bits = static_cast<unsigned short>(bits | (1u << (rank_of(c) - 2)));
+    }
+    return bits;
+}
+
+/// A deal expressed as, per suit, the owner (N/E/S/W) of each rank from A down to 2.
+struct TestDeal
+{
+    int hand_lookup[DDS_SUITS][15] = {};
+
+    static auto from_owners(
+        const std::string& spades,
+        const std::string& hearts,
+        const std::string& diamonds,
+        const std::string& clubs) -> TestDeal
+    {
+        TestDeal deal;
+        const std::string* suits[DDS_SUITS] = {&spades, &hearts, &diamonds, &clubs};
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            for (int i = 0; i < 13; ++i) {
+                deal.hand_lookup[s][14 - i] = seat_of((*suits[s])[static_cast<size_t>(i)]);
+            }
+        }
+        return deal;
+    }
+
+    /// Every rank r in every suit s is held by seat (r + s) % 4 (13 cards each).
+    static auto rotating() -> TestDeal
+    {
+        TestDeal deal;
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            for (int r = 2; r <= 14; ++r) {
+                deal.hand_lookup[s][r] = (r + s) % DDS_HANDS;
+            }
+        }
+        return deal;
+    }
+
+    static auto random(std::mt19937& rng) -> TestDeal
+    {
+        std::vector<int> cards(52);
+        std::iota(cards.begin(), cards.end(), 0);
+        std::shuffle(cards.begin(), cards.end(), rng);
+        TestDeal deal;
+        for (size_t i = 0; i < cards.size(); ++i) {
+            const int s = cards[i] / 13;
+            const int r = 2 + cards[i] % 13;
+            deal.hand_lookup[s][r] = static_cast<int>(i / 13);
+        }
+        return deal;
+    }
+};
+
+/// The remaining cards of a position, with the derived TT key inputs.
+struct TestPosition
+{
+    unsigned short aggr[DDS_SUITS] = {};
+    int hand_dist[DDS_HANDS] = {};
+    int tricks = 0;
+
+    static auto remaining(
+        const TestDeal& deal,
+        const std::string& spades,
+        const std::string& hearts,
+        const std::string& diamonds,
+        const std::string& clubs) -> TestPosition
+    {
+        TestPosition pos;
+        pos.aggr[0] = ranks(spades);
+        pos.aggr[1] = ranks(hearts);
+        pos.aggr[2] = ranks(diamonds);
+        pos.aggr[3] = ranks(clubs);
+        pos.finish(deal);
+        return pos;
+    }
+
+    void finish(const TestDeal& deal)
+    {
+        int length[DDS_HANDS][DDS_SUITS] = {};
+        int total = 0;
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            for (int r = 2; r <= 14; ++r) {
+                if (aggr[s] & (1u << (r - 2))) {
+                    ++length[deal.hand_lookup[s][r]][s];
+                    ++total;
+                }
+            }
+        }
+        for (int h = 0; h < DDS_HANDS; ++h) {
+            hand_dist[h] = (length[h][0] << 8) | (length[h][1] << 4) | length[h][2];
+        }
+        tricks = total / 4 - 1;
+    }
+};
+
+auto full_deal_position(const TestDeal& deal) -> TestPosition
+{
+    return TestPosition::remaining(deal, AllRanks, AllRanks, AllRanks, AllRanks);
+}
+
+auto node(int lower, int upper, int best_suit = 0, int best_rank = 0) -> NodeCards
+{
+    NodeCards cards{};
+    cards.lower_bound = static_cast<char>(lower);
+    cards.upper_bound = static_cast<char>(upper);
+    cards.best_move_suit = static_cast<char>(best_suit);
+    cards.best_move_rank = static_cast<char>(best_rank);
+    return cards;
+}
+
+struct WinRanks
+{
+    unsigned short ranks[DDS_SUITS] = {};
+};
+
+auto win(const std::string& spades,
+         const std::string& hearts = "",
+         const std::string& diamonds = "",
+         const std::string& clubs = "") -> WinRanks
+{
+    WinRanks w;
+    w.ranks[0] = ranks(spades);
+    w.ranks[1] = ranks(hearts);
+    w.ranks[2] = ranks(diamonds);
+    w.ranks[3] = ranks(clubs);
+    return w;
+}
+
+class TransTablePTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        tt_.set_memory_default(16);
+        tt_.set_memory_maximum(32);
+        tt_.make_tt();
+    }
+
+    void init(const TestDeal& deal)
+    {
+        tt_.init(deal.hand_lookup);
+    }
+
+    /// Runs lookup() then add() the way ab_search_0 does for a fresh node.
+    void store(const TestPosition& pos, int hand, const WinRanks& w, const NodeCards& cards,
+               bool flag = true)
+    {
+        bool lower_flag = false;
+        (void)tt_.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, -1, lower_flag);
+        tt_.add(pos.tricks, hand, pos.aggr, w.ranks, cards, flag);
+    }
+
+    auto lookup(const TestPosition& pos, int hand, int limit, bool& lower_flag) -> NodeCards const*
+    {
+        lower_flag = false;
+        return tt_.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, limit, lower_flag);
+    }
+
+    TransTableP tt_;
+};
+
+// ---------------------------------------------------------------------------
+// Basic hit / miss semantics
+// ---------------------------------------------------------------------------
+
+TEST_F(TransTablePTest, LookupOnEmptyTableMisses)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    bool lower_flag = true;
+
+    // Act
+    NodeCards const* hit = lookup(pos, 0, 5, lower_flag);
+
+    // Assert
+    EXPECT_EQ(hit, nullptr);
+    EXPECT_EQ(tt_.node_count(), 0u);
+}
+
+TEST_F(TransTablePTest, StoredPositionIsFoundWithLowerFlagWhenLowerBoundExceedsLimit)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(7, 12));
+    bool lower_flag = false;
+
+    // Act
+    NodeCards const* hit = lookup(pos, 0, 6, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->lower_bound, 7);
+    EXPECT_EQ(hit->upper_bound, 12);
+    EXPECT_EQ(tt_.node_count(), 1u);
+}
+
+TEST_F(TransTablePTest, StoredPositionIsFoundWithoutLowerFlagWhenUpperBoundWithinLimit)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(2, 5));
+    bool lower_flag = true;
+
+    // Act
+    NodeCards const* hit = lookup(pos, 0, 5, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_FALSE(lower_flag);
+}
+
+TEST_F(TransTablePTest, StoredPositionMissesWhenLimitFallsStrictlyInsideBounds)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(3, 8));
+    bool lower_flag = false;
+
+    // Act & Assert
+    EXPECT_EQ(lookup(pos, 0, 3, lower_flag), nullptr);   // lower == limit: no cut
+    EXPECT_EQ(lookup(pos, 0, 7, lower_flag), nullptr);   // upper > limit: no cut
+    EXPECT_NE(lookup(pos, 0, 2, lower_flag), nullptr);
+    EXPECT_NE(lookup(pos, 0, 8, lower_flag), nullptr);
+}
+
+TEST_F(TransTablePTest, DifferentHandTricksOrShapeDoNotMatch)
+{
+    // Arrange: the same deal with one trick of low cards played, twice, in two
+    // ways that give different shapes.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto full = full_deal_position(deal);
+    // Trick one: 5432 of spades (owners 3,2,1,0 for the rotating deal).
+    const auto after_spade_trick =
+        TestPosition::remaining(deal, "AKQJT9876", AllRanks, AllRanks, AllRanks);
+    // Alternative first trick: 5432 of hearts.
+    const auto after_heart_trick =
+        TestPosition::remaining(deal, AllRanks, "AKQJT9876", AllRanks, AllRanks);
+    ASSERT_EQ(after_spade_trick.tricks, after_heart_trick.tricks);
+    ASSERT_NE(after_spade_trick.hand_dist[0], after_heart_trick.hand_dist[0]);
+    store(after_spade_trick, 1, win("A"), node(6, 6));
+    bool lower_flag = false;
+
+    // Act & Assert
+    EXPECT_NE(lookup(after_spade_trick, 1, 5, lower_flag), nullptr);
+    EXPECT_EQ(lookup(after_spade_trick, 2, 5, lower_flag), nullptr) << "hand differs";
+    EXPECT_EQ(lookup(after_heart_trick, 1, 5, lower_flag), nullptr) << "shape differs";
+    EXPECT_EQ(lookup(full, 1, 5, lower_flag), nullptr) << "trick count differs";
+}
+
+// ---------------------------------------------------------------------------
+// Relative-rank pattern generalisation
+// ---------------------------------------------------------------------------
+
+TEST_F(TransTablePTest, PositionDifferingOnlyInIrrelevantCardsHits)
+{
+    // Arrange: in spades North holds A and 4, East holds K and 3, the rest are
+    // irrelevant. Two positions with the same shape whose spade holdings differ
+    // only below the lowest winning rank (the king).
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    // Remaining spades A K Q J 5 4 3 2 (owners N E S W E S W N) ...
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    // ... and A K T 9 7 6 4 3 (owners N E S W E N S W): same shape, same top
+    // four owners, different owners further down.
+    const auto pos_b = TestPosition::remaining(deal, "AKT97643", "AKQJ", "AKQJ", "AKQJ");
+    ASSERT_EQ(std::memcmp(pos_a.hand_dist, pos_b.hand_dist, sizeof(pos_a.hand_dist)), 0);
+    store(pos_a, 0, win("J"), node(4, 4));
+    bool lower_flag = false;
+
+    // Act
+    NodeCards const* hit = lookup(pos_b, 0, 3, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+}
+
+TEST_F(TransTablePTest, PositionDifferingInARelevantCardMisses)
+{
+    // Arrange: same spade layout as above, but now the third-highest spade is
+    // relevant and is held by different seats in the two positions.
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    // A K J T 9 8 7 4 (owners N E W S W N E S): same shape as pos_a but the
+    // third-highest spade now belongs to West, not South.
+    const auto pos_c = TestPosition::remaining(deal, "AKJT9874", "AKQJ", "AKQJ", "AKQJ");
+    ASSERT_EQ(std::memcmp(pos_a.hand_dist, pos_c.hand_dist, sizeof(pos_a.hand_dist)), 0);
+    store(pos_a, 0, win("Q"), node(4, 4));
+    bool lower_flag = false;
+
+    // Act & Assert
+    EXPECT_EQ(lookup(pos_c, 0, 3, lower_flag), nullptr);
+    EXPECT_NE(lookup(pos_a, 0, 3, lower_flag), nullptr);
+}
+
+TEST_F(TransTablePTest, ZeroWinRanksMakesEverySameShapePositionMatch)
+{
+    // Arrange
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    const auto pos_c = TestPosition::remaining(deal, "AKJT9874", "AKQJ", "AKQJ", "AKQJ");
+    store(pos_a, 0, win(""), node(0, 2));
+    bool lower_flag = true;
+
+    // Act
+    NodeCards const* hit = lookup(pos_c, 0, 2, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_FALSE(lower_flag);
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        EXPECT_EQ(hit->least_win[s], 0);
+    }
+}
+
+TEST_F(TransTablePTest, LeastWinEncodesLowestRelevantRankPerSuit)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("AK", "", "Q", "2"), node(9, 9));
+    bool lower_flag = false;
+
+    // Act
+    NodeCards const* hit = lookup(pos, 0, 8, lower_flag);
+
+    // Assert: least_win = 15 - lowest relevant absolute rank, 0 when unused.
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->least_win[0], 15 - 13);
+    EXPECT_EQ(hit->least_win[1], 0);
+    EXPECT_EQ(hit->least_win[2], 15 - 12);
+    EXPECT_EQ(hit->least_win[3], 15 - 2);
+}
+
+// ---------------------------------------------------------------------------
+// Bounds merging, best move, subsumption and deduplication
+// ---------------------------------------------------------------------------
+
+TEST_F(TransTablePTest, ReAddingTheSamePatternIntersectsBounds)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(2, 10));
+    store(pos, 0, win("A"), node(5, 12));
+    bool lower_flag = false;
+
+    // Act
+    NodeCards const* hit = lookup(pos, 0, 4, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->lower_bound, 5);
+    EXPECT_EQ(hit->upper_bound, 10);
+    EXPECT_EQ(tt_.node_count(), 1u);
+}
+
+TEST_F(TransTablePTest, BestMoveIsKeptOnlyWhenTheStoreIsFlaggedAsACutoff)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    bool lower_flag = false;
+
+    // Act & Assert: an exhaustive (flag == false) store has no best move ...
+    store(pos, 0, win("A"), node(0, 3, 2, 11), false);
+    NodeCards const* hit = lookup(pos, 0, 3, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->best_move_suit, 0);
+    EXPECT_EQ(hit->best_move_rank, 0);
+
+    // ... while a cutoff store records it, also when merging into the entry.
+    store(pos, 0, win("A"), node(1, 3, 2, 11), true);
+    hit = lookup(pos, 0, 3, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->best_move_suit, 2);
+    EXPECT_EQ(hit->best_move_rank, 11);
+}
+
+TEST_F(TransTablePTest, PatternsWithDifferentRelevantCardsAreStoredSeparately)
+{
+    // Arrange: a generic pattern (ace only) already bounds the position.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(3, 9));
+
+    // Act: a more specific pattern (AKQ relevant) for the same position,
+    // looser below but tighter above.
+    store(pos, 0, win("Q"), node(2, 7));
+
+    // Assert: the two patterns are distinct entries, each keeping its own
+    // bounds; re-adding the generic one tightens only the generic one.
+    EXPECT_EQ(tt_.node_count(), 2u);
+    store(pos, 0, win("A"), node(5, 9));
+    EXPECT_EQ(tt_.node_count(), 2u);
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 4, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->lower_bound, 5);
+    EXPECT_EQ(hit->least_win[0], 1);
+    hit = lookup(pos, 0, 9, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_FALSE(lower_flag);
+    EXPECT_EQ(hit->upper_bound, 9);
+    EXPECT_EQ(hit->least_win[0], 1);
+    hit = lookup(pos, 0, 7, lower_flag);
+    ASSERT_NE(hit, nullptr) << "only the specific pattern's upper bound cuts here";
+    EXPECT_FALSE(lower_flag);
+    EXPECT_EQ(hit->upper_bound, 7);
+    EXPECT_EQ(hit->least_win[0], 3);
+}
+
+TEST_F(TransTablePTest, MoreSpecificPatternWithTighterBoundsIsStoredAndFound)
+{
+    // Arrange
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    const auto pos_c = TestPosition::remaining(deal, "AKJT9874", "AKQJ", "AKQJ", "AKQJ");
+    store(pos_a, 0, win("K"), node(3, 9));   // matches pos_a and pos_c
+    store(pos_a, 0, win("Q"), node(6, 9));   // matches only pos_a
+    bool lower_flag = false;
+
+    // Act & Assert
+    EXPECT_EQ(tt_.node_count(), 2u);
+    NodeCards const* hit_a = lookup(pos_a, 0, 5, lower_flag);
+    ASSERT_NE(hit_a, nullptr) << "specific pattern must cut at its tighter bound";
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit_a->lower_bound, 6);
+    EXPECT_EQ(lookup(pos_c, 0, 5, lower_flag), nullptr) << "generic bound alone does not cut";
+    EXPECT_NE(lookup(pos_c, 0, 2, lower_flag), nullptr) << "generic bound still applies";
+}
+
+TEST_F(TransTablePTest, GenericPatternAddedAfterSpecificOnesCoversThemAll)
+{
+    // Arrange: two specific patterns on different positions of one shape.
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    const auto pos_c = TestPosition::remaining(deal, "AKJT9874", "AKQJ", "AKQJ", "AKQJ");
+    store(pos_a, 0, win("Q"), node(6, 8));   // top three spades: N E S
+    store(pos_c, 0, win("J"), node(2, 4));   // top three spades: N E W
+
+    // Act: a generic pattern (top two spades: N E) covering both.
+    store(pos_a, 0, win("K"), node(1, 9));
+
+    // Assert: three entries; each position cuts on its own specific bound
+    // and both share the generic one.
+    EXPECT_EQ(tt_.node_count(), 3u);
+    bool lower_flag = false;
+    NodeCards const* hit_a = lookup(pos_a, 0, 5, lower_flag);
+    ASSERT_NE(hit_a, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit_a->lower_bound, 6);
+    NodeCards const* hit_c = lookup(pos_c, 0, 5, lower_flag);
+    ASSERT_NE(hit_c, nullptr);
+    EXPECT_FALSE(lower_flag);
+    EXPECT_EQ(hit_c->upper_bound, 4);
+    EXPECT_EQ(lookup(pos_a, 0, 0, lower_flag)->least_win[0], 2);
+    EXPECT_EQ(lookup(pos_c, 0, 0, lower_flag)->least_win[0], 2);
+}
+
+TEST_F(TransTablePTest, TighteningAPatternDoesNotTouchOtherPatterns)
+{
+    // Arrange: a specific pattern alongside a generic one.
+    const auto deal = TestDeal::from_owners(
+        "NESWSWNE" "NESW" "N",
+        "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto pos_a = TestPosition::remaining(deal, "AKQJ5432", "AKQJ", "AKQJ", "AKQJ");
+    store(pos_a, 0, win("K"), node(0, 12));
+    store(pos_a, 0, win("Q"), node(5, 12));
+    ASSERT_EQ(tt_.node_count(), 2u);
+
+    // Act: the generic pattern learns an upper bound of 6.
+    store(pos_a, 0, win("K"), node(0, 6));
+
+    // Assert
+    EXPECT_EQ(tt_.node_count(), 2u);
+    bool lower_flag = true;
+    NodeCards const* hit = lookup(pos_a, 0, 6, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_FALSE(lower_flag);
+    EXPECT_EQ(hit->upper_bound, 6);
+    EXPECT_EQ(hit->least_win[0], 2);
+    hit = lookup(pos_a, 0, 4, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->lower_bound, 5);
+    EXPECT_EQ(hit->upper_bound, 12);
+    EXPECT_EQ(hit->least_win[0], 3);
+}
+
+TEST_F(TransTablePTest, IncomparableMatchingPatternsAreTriedMostGenericFirst)
+{
+    // Arrange: two patterns that both match the position but constrain
+    // disjoint cards. The one with fewer relevant cards is more general and
+    // so more likely to match future positions; it should be found first
+    // regardless of insertion order.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("K", "", "K"), node(7, 7, 2, 13));     // 4 relevant cards
+    store(pos, 0, win("Q", "Q"), node(7, 7, 0, 14));         // 6 relevant cards
+    ASSERT_EQ(tt_.node_count(), 2u);
+
+    // Act
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 6, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->best_move_suit, 2);
+    EXPECT_EQ(hit->least_win[2], 2);
+    EXPECT_EQ(hit->least_win[1], 0);
+}
+
+TEST_F(TransTablePTest, PatternsWhoseFirstRelevantSuitDiffersAreAllFound)
+{
+    // Arrange: one pattern per suit, each relevant only in that suit, plus a
+    // pattern with no relevant cards at all. Every position of the shape
+    // must be checked against all of them.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    // In the rotating deal the spade owners are S E N W S E N W S E N W S
+    // from the ace down; both positions below have one spade gone per hand.
+    const auto pos = TestPosition::remaining(deal, "KQJT65432", AllRanks, AllRanks, AllRanks);
+    const auto other = TestPosition::remaining(deal, "A98765432", AllRanks, AllRanks, AllRanks);
+    ASSERT_EQ(pos.tricks, other.tricks);
+    ASSERT_TRUE(std::equal(pos.hand_dist, pos.hand_dist + DDS_HANDS, other.hand_dist));
+    store(pos, 0, win("K"), node(1, 12, 0, 0));
+    store(pos, 0, win("", "K"), node(2, 12, 1, 0));
+    store(pos, 0, win("", "", "K"), node(3, 12, 2, 0));
+    store(pos, 0, win("", "", "", "K"), node(4, 12, 3, 0));
+    store(pos, 0, win(""), node(0, 11, 0, 5));
+    ASSERT_EQ(tt_.node_count(), 5u);
+
+    // Act / Assert: raising the limit knocks the patterns out one by one.
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 3, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->best_move_suit, 3);
+    hit = lookup(pos, 0, 2, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_GE(hit->lower_bound, 3);
+    hit = lookup(pos, 0, 11, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_FALSE(lower_flag);
+    EXPECT_EQ(hit->best_move_rank, 5);
+    EXPECT_EQ(lookup(pos, 0, 4, lower_flag), nullptr);
+    EXPECT_EQ(lookup(pos, 0, 10, lower_flag), nullptr);
+
+    // The other position differs from pos only in who holds the top spades,
+    // so it misses the spade pattern but still matches the heart, diamond,
+    // club and wildcard patterns.
+    hit = lookup(other, 0, 3, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->best_move_suit, 3);
+    hit = lookup(other, 0, 0, lower_flag);   // only the spade pattern's [1, 12] bound
+    ASSERT_NE(hit, nullptr);                 // is useless here; another must cut
+    EXPECT_NE(hit->best_move_suit, 0);
+    EXPECT_EQ(hit->least_win[0], 0);
+}
+
+// ---------------------------------------------------------------------------
+// Memory management and lifecycle
+// ---------------------------------------------------------------------------
+
+TEST_F(TransTablePTest, ResetMemoryForgetsEverythingButKeepsTheTableUsable)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(7, 12));
+
+    // Act
+    tt_.reset_memory(ResetReason::NewDeal);
+
+    // Assert
+    bool lower_flag = false;
+    EXPECT_EQ(lookup(pos, 0, 6, lower_flag), nullptr);
+    EXPECT_EQ(tt_.node_count(), 0u);
+    store(pos, 0, win("A"), node(7, 12));
+    EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
+}
+
+TEST_F(TransTablePTest, ReturnAllMemoryThenMakeTtStartsFresh)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(7, 12));
+
+    // Act
+    tt_.return_all_memory();
+    tt_.make_tt();
+    init(deal);
+
+    // Assert
+    bool lower_flag = false;
+    EXPECT_EQ(lookup(pos, 0, 6, lower_flag), nullptr);
+    store(pos, 0, win("A"), node(7, 12));
+    EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
+}
+
+TEST(TransTablePMemoryTest, StaysWithinTheMaximumAndResetsWhenExhausted)
+{
+    // Arrange: a tiny table and a stream of distinct positions/patterns.
+    TransTableP tt;
+    tt.set_memory_default(1);
+    tt.set_memory_maximum(2);
+    tt.make_tt();
+    std::mt19937 rng(7);
+    const auto deal = TestDeal::random(rng);
+    tt.init(deal.hand_lookup);
+    const double baseline_kb = tt.memory_in_use();
+    std::uniform_int_distribution<int> pick_hand(0, 3);
+    std::uniform_int_distribution<int> pick_bound(0, 13);
+    size_t max_nodes_seen = 0;
+    bool shrank_at_some_point = false;
+
+    // Act
+    for (int i = 0; i < 200000; ++i) {
+        // Random legal position: play whole tricks of random cards.
+        TestPosition pos;
+        for (int s = 0; s < DDS_SUITS; ++s) pos.aggr[s] = 0x1fff;
+        const int tricks_played = 1 + (i % 6);
+        for (int t = 0; t < tricks_played; ++t) {
+            for (int h = 0; h < DDS_HANDS; ++h) {
+                std::vector<std::pair<int, int>> held;
+                for (int s = 0; s < DDS_SUITS; ++s)
+                    for (int r = 2; r <= 14; ++r)
+                        if ((pos.aggr[s] & (1u << (r - 2))) && deal.hand_lookup[s][r] == h)
+                            held.emplace_back(s, r);
+                const auto [s, r] = held[std::uniform_int_distribution<size_t>(0, held.size() - 1)(rng)];
+                pos.aggr[s] = static_cast<unsigned short>(pos.aggr[s] & ~(1u << (r - 2)));
+            }
+        }
+        pos.finish(deal);
+        WinRanks w;
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            w.ranks[s] = static_cast<unsigned short>(pos.aggr[s] & std::uniform_int_distribution<int>(0, 0x1fff)(rng));
+        }
+        const int lo = pick_bound(rng);
+        const int hand = pick_hand(rng);
+        bool lower_flag = false;
+        (void)tt.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, -1, lower_flag);
+        const size_t before = tt.node_count();
+        tt.add(pos.tricks, hand, pos.aggr, w.ranks, node(lo, 13), true);
+        if (tt.node_count() < before) shrank_at_some_point = true;
+        max_nodes_seen = std::max(max_nodes_seen, tt.node_count());
+        ASSERT_LE(tt.memory_in_use(), baseline_kb + 2 * 1024.0 + 1.0);
+    }
+
+    // Assert
+    EXPECT_TRUE(shrank_at_some_point) << "the table never hit its limit";
+    EXPECT_GT(max_nodes_seen, 1000u);
+}
+
+// ---------------------------------------------------------------------------
+// Equivalence with TransTableL on small workloads
+// ---------------------------------------------------------------------------
+
+/// For workloads small enough that TransTableL never evicts, both tables must
+/// take identical cut decisions on every lookup. Bounds are generated to be
+/// consistent per (tricks, hand) so that intersections never become empty.
+TEST(TransTablePEquivalenceTest, CutDecisionsMatchTransTableLOnSmallWorkloads)
+{
+    for (unsigned seed = 1; seed <= 12; ++seed) {
+        // Arrange
+        std::mt19937 rng(seed);
+        const auto deal = TestDeal::random(rng);
+        TransTableL large;
+        large.set_memory_default(16);
+        large.set_memory_maximum(32);
+        large.make_tt();
+        large.init(deal.hand_lookup);
+        TransTableP pattern;
+        pattern.set_memory_default(16);
+        pattern.set_memory_maximum(32);
+        pattern.make_tt();
+        pattern.init(deal.hand_lookup);
+
+        int hidden_value[13][DDS_HANDS];
+        for (auto& row : hidden_value)
+            for (int& v : row) v = std::uniform_int_distribution<int>(2, 8)(rng);
+
+        std::vector<TestPosition> seen;
+        auto random_position = [&]() {
+            TestPosition pos;
+            for (int s = 0; s < DDS_SUITS; ++s) pos.aggr[s] = 0x1fff;
+            // TransTableL indexes tricks 0..11, so at least one trick is played.
+            const int tricks_played = std::uniform_int_distribution<int>(1, 3)(rng);
+            for (int t = 0; t < tricks_played; ++t) {
+                for (int h = 0; h < DDS_HANDS; ++h) {
+                    std::vector<std::pair<int, int>> held;
+                    for (int s = 0; s < DDS_SUITS; ++s)
+                        for (int r = 2; r <= 14; ++r)
+                            if ((pos.aggr[s] & (1u << (r - 2))) && deal.hand_lookup[s][r] == h)
+                                held.emplace_back(s, r);
+                    // Prefer low cards so that shapes and top cards repeat often.
+                    std::sort(held.begin(), held.end(),
+                              [](auto a, auto b) { return a.second < b.second; });
+                    const size_t idx = std::min(held.size() - 1,
+                        static_cast<size_t>(std::uniform_int_distribution<int>(0, 5)(rng)));
+                    const auto [s, r] = held[idx];
+                    pos.aggr[s] = static_cast<unsigned short>(pos.aggr[s] & ~(1u << (r - 2)));
+                }
+            }
+            pos.finish(deal);
+            return pos;
+        };
+
+        int hits = 0;
+        // Act & Assert
+        for (int step = 0; step < 400; ++step) {
+            TestPosition pos = (!seen.empty() && step % 3 == 0)
+                ? seen[std::uniform_int_distribution<size_t>(0, seen.size() - 1)(rng)]
+                : random_position();
+            seen.push_back(pos);
+            const int hand = std::uniform_int_distribution<int>(0, 3)(rng);
+            const int limit = std::uniform_int_distribution<int>(-1, 13)(rng);
+
+            bool lower_l = false;
+            bool lower_p = false;
+            NodeCards const* hit_l =
+                large.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, limit, lower_l);
+            NodeCards const* hit_p =
+                pattern.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, limit, lower_p);
+            ASSERT_EQ(hit_l != nullptr, hit_p != nullptr)
+                << "seed " << seed << " step " << step << " limit " << limit;
+            if (hit_l != nullptr) {
+                ++hits;
+                EXPECT_EQ(lower_l, lower_p) << "seed " << seed << " step " << step;
+                continue;
+            }
+
+            // Store a pattern whose relevant cards are the top few of one or two suits.
+            WinRanks w;
+            for (int s = 0; s < DDS_SUITS; ++s) {
+                if (std::uniform_int_distribution<int>(0, 2)(rng) != 0) continue;
+                const int keep = std::uniform_int_distribution<int>(1, 3)(rng);
+                unsigned short bits = pos.aggr[s];
+                int count = 0;
+                for (int r = 14; r >= 2 && count < keep; --r) {
+                    if (bits & (1u << (r - 2))) {
+                        ++count;
+                        if (count == keep) w.ranks[s] = static_cast<unsigned short>(1u << (r - 2));
+                    }
+                }
+            }
+            const int v = hidden_value[pos.tricks][hand];
+            const int lo = v - std::uniform_int_distribution<int>(0, 3)(rng);
+            const int hi = v + std::uniform_int_distribution<int>(0, 3)(rng);
+            const bool flag = std::uniform_int_distribution<int>(0, 1)(rng) == 1;
+            const auto cards = node(std::max(lo, 0), std::min(hi, 13), 1, 12);
+            large.add(pos.tricks, hand, pos.aggr, w.ranks, cards, flag);
+            pattern.add(pos.tricks, hand, pos.aggr, w.ranks, cards, flag);
+        }
+        EXPECT_GT(hits, 20) << "seed " << seed << ": workload produced too few hits to be meaningful";
+    }
+}
+
+} // namespace

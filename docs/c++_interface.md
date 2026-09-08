@@ -36,7 +36,7 @@ Primary entry points:
 
 Fields:
 
-- `tt_kind_`: `TTKind::Small` or `TTKind::Large`
+- `tt_kind_`: `TTKind::Pattern` (default), `TTKind::Large` or `TTKind::Small`
 - `tt_mem_default_mb_`: default TT memory in MB
 - `tt_mem_maximum_mb_`: maximum TT memory in MB
 

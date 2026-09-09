@@ -140,11 +140,20 @@ class TransTableP : public TransTable
     /// the nodes, bucket by bucket. The header is padded to whole cache
     /// lines so that the nodes are line-aligned. Nodes are trivially
     /// copyable, so the block is managed with plain memory moves.
+    ///
+    /// The padding is spelled out rather than left to `alignas` so that the
+    /// layout is identical on every compiler (and MSVC's C4324 stays quiet).
+    static constexpr std::size_t TreeHeaderBytes = 2 * sizeof(std::uint32_t) +
+                                                   BucketCount * sizeof(std::uint32_t);
+    static constexpr std::size_t TreePaddingBytes =
+        (CacheLine - TreeHeaderBytes % CacheLine) % CacheLine;
+
     struct alignas(CacheLine) PatternTree
     {
         std::uint32_t size;
         std::uint32_t capacity;
         std::uint32_t bucket_end[BucketCount];   ///< End offset of each bucket.
+        std::uint8_t padding[TreePaddingBytes];  ///< Rounds the header up to whole lines.
 
         auto nodes() -> PatternNode* { return reinterpret_cast<PatternNode*>(this + 1); }
         auto nodes() const -> const PatternNode*
@@ -163,6 +172,11 @@ class TransTableP : public TransTable
         }
         auto insert(std::size_t at, const PatternNode& node) -> void;
     };
+    static_assert(sizeof(PatternTree) % CacheLine == 0 &&
+                  sizeof(PatternTree) == TreeHeaderBytes + TreePaddingBytes,
+                  "PatternTree header must fill whole cache lines with no implicit padding");
+    static_assert(sizeof(PatternNode) == 32 && CacheLine % sizeof(PatternNode) == 0,
+                  "two PatternNodes must fit exactly in a cache line");
 
     struct ShapeSlot
     {

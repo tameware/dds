@@ -15,15 +15,28 @@
 
 namespace {
 
+/// Sets an environment variable portably; a null or empty value removes it.
+void set_env_var(const char* name, const char* value)
+{
+#ifdef _WIN32
+  _putenv_s(name, value != nullptr ? value : "");
+#else
+  if (value == nullptr || value[0] == '\0')
+    unsetenv(name);
+  else
+    setenv(name, value, 1);
+#endif
+}
+
 struct ScopedEnv
 {
   ScopedEnv(const char* name, const char* value) : name_(name)
   {
-    setenv(name, value, 1);
+    set_env_var(name, value);
   }
   ~ScopedEnv()
   {
-    unsetenv(name_);
+    set_env_var(name_, nullptr);
   }
   const char* name_;
 };
@@ -38,7 +51,7 @@ auto kind_of(const TransTable* tt) -> TTKind
 TEST(ConfigureTtApiTest, DefaultConfigurationUsesThePatternTable)
 {
   // Arrange: no explicit kind anywhere (and no environment override).
-  unsetenv("DDS_TT_KIND");
+  set_env_var("DDS_TT_KIND", nullptr);
   SolverConfig cfg;
   SolverContext configured(cfg);
   SolverContext bare;

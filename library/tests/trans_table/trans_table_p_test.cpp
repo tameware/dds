@@ -734,6 +734,47 @@ TEST_F(TransTablePTest, ReturnAllMemoryThenMakeTtStartsFresh)
     EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
 }
 
+TEST_F(TransTablePTest, ReturnAllMemoryLeavesNothingAllocated)
+{
+    // Arrange: a table with patterns, pooled blocks and the ownership table.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    const char* spades[] = {"A", "AK", "AKQ", "AKQJ", "AKQJT", "AKQJT9", "AKQJT98", "AKQJT987", "AKQJT9876"};
+    for (const char* s : spades) store(pos, 0, win(s), node(7, 12));   // grows a block → one pooled
+    ASSERT_GT(tt_.memory_in_use(), 0.0);
+
+    // Act
+    tt_.return_all_memory();
+
+    // Assert
+    EXPECT_EQ(tt_.memory_in_use(), 0.0);
+    EXPECT_EQ(tt_.node_count(), 0u);
+    EXPECT_EQ(tt_.shape_count(), 0u);
+}
+
+TEST_F(TransTablePTest, MemoryExhaustedResetReturnsToTheEmptyTableFootprint)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const double empty_kb = tt_.memory_in_use();
+    const auto pos = full_deal_position(deal);
+    const char* spades[] = {"A", "AK", "AKQ", "AKQJ", "AKQJT", "AKQJT9", "AKQJT98", "AKQJT987", "AKQJT9876"};
+    for (const char* s : spades) store(pos, 0, win(s), node(7, 12));
+    ASSERT_GT(tt_.memory_in_use(), empty_kb);
+
+    // Act
+    tt_.reset_memory(ResetReason::MemoryExhausted);
+
+    // Assert: no active and no pooled blocks remain, only the empty shape table.
+    EXPECT_EQ(tt_.memory_in_use(), empty_kb);
+    EXPECT_EQ(tt_.node_count(), 0u);
+    store(pos, 0, win("A"), node(7, 12));
+    bool lower_flag = false;
+    EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
+}
+
 TEST(TransTablePMemoryTest, StaysWithinTheMaximumAndResetsWhenExhausted)
 {
     // Arrange: a tiny table and a stream of distinct positions/patterns.

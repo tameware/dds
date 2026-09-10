@@ -224,8 +224,10 @@ class TransTableP : public TransTable
     auto dynamic_bytes() const -> std::size_t;
     auto reserve_one_more(ShapeSlot& slot) -> bool;
     auto acquire_tree(std::size_t capacity) -> PatternTree*;
-    auto release_tree(PatternTree* tree) -> void;
+    auto release_tree(PatternTree* tree) -> void;   ///< To the pool (may allocate).
     auto release_trees() -> void;
+    auto delete_tree(PatternTree* tree) -> void;    ///< To the allocator (never allocates).
+    auto delete_trees() -> void;
     auto free_spare_trees() -> void;
     static auto size_class(std::size_t capacity) -> int;
 

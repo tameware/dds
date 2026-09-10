@@ -126,7 +126,10 @@ auto TransTableP::make_tt() -> void
     }
     maximum_bytes_ = std::max(maximum_bytes_, default_bytes_);
 
-    return_all_memory();
+    // Start from an empty table; the ownership table, if init() has already
+    // built it, is deal-specific rather than size-specific and is kept.
+    delete_trees();
+    free_spare_trees();
     shapes_.assign(InitialShapes, ShapeSlot{});
 }
 
@@ -138,9 +141,13 @@ auto TransTableP::reset_memory(const ResetReason reason) -> void
     }
     ++reset_counts_[static_cast<int>(reason)];
 
-    release_trees();
     if (reason == ResetReason::MemoryExhausted) {
+        // Over budget: give the blocks back outright. Pooling them first
+        // could itself allocate, which is the one thing this path must not do.
+        delete_trees();
         free_spare_trees();
+    } else {
+        release_trees();
     }
     std::vector<ShapeSlot> fresh(InitialShapes);
     shapes_.swap(fresh);
@@ -149,9 +156,13 @@ auto TransTableP::reset_memory(const ResetReason reason) -> void
 
 auto TransTableP::return_all_memory() -> void
 {
-    release_trees();
+    delete_trees();
     free_spare_trees();
+    for (auto& spares : spare_trees_) {
+        std::vector<PatternTree*>().swap(spares);
+    }
     std::vector<ShapeSlot>().swap(shapes_);
+    std::vector<Ownership>().swap(ownership_);   // init() rebuilds it per deal
 }
 
 
@@ -353,12 +364,31 @@ auto TransTableP::release_trees() -> void
 }
 
 
+auto TransTableP::delete_tree(PatternTree* tree) -> void
+{
+    tree_bytes_ -= PatternTree::bytes_for(tree->capacity);
+    ::operator delete(tree, std::align_val_t{CacheLine});
+}
+
+
+auto TransTableP::delete_trees() -> void
+{
+    for (ShapeSlot& slot : shapes_) {
+        if (slot.tree) {
+            delete_tree(slot.tree);
+            slot.tree = nullptr;
+        }
+    }
+    shape_count_ = 0;
+    node_count_ = 0;
+}
+
+
 auto TransTableP::free_spare_trees() -> void
 {
     for (auto& spares : spare_trees_) {
         for (PatternTree* tree : spares) {
-            tree_bytes_ -= PatternTree::bytes_for(tree->capacity);
-            ::operator delete(tree, std::align_val_t{CacheLine});
+            delete_tree(tree);
         }
         spares.clear();
     }

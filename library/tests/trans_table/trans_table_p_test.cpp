@@ -14,6 +14,7 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -694,6 +695,11 @@ TEST_F(TransTablePTest, PatternsWhoseFirstRelevantSuitDiffersAreAllFound)
 // ---------------------------------------------------------------------------
 // Memory management and lifecycle
 // ---------------------------------------------------------------------------
+
+// The table owns raw pattern blocks; an implicit copy would alias and then
+// double-free them.
+static_assert(!std::is_copy_constructible_v<TransTableP>, "TransTableP must not be copyable");
+static_assert(!std::is_copy_assignable_v<TransTableP>, "TransTableP must not be copy-assignable");
 
 TEST_F(TransTablePTest, ResetMemoryForgetsEverythingButKeepsTheTableUsable)
 {

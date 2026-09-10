@@ -46,6 +46,10 @@ class TransTableP : public TransTable
     TransTableP();
     ~TransTableP() override;
 
+    /// Owns raw pattern blocks; copying would alias and then double-free them.
+    TransTableP(const TransTableP&) = delete;
+    auto operator=(const TransTableP&) -> TransTableP& = delete;
+
     auto init(const int hand_lookup[][15]) -> void override;
     auto set_memory_default(int megabytes) -> void override;
     auto set_memory_maximum(int megabytes) -> void override;

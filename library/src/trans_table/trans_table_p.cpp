@@ -414,9 +414,16 @@ auto TransTableP::reserve_one_more(ShapeSlot& slot) -> bool
     if (old) {
         std::memcpy(fresh, old, PatternTree::bytes_for(old->size));
         fresh->capacity = static_cast<std::uint32_t>(wanted);
-        release_tree(old);
     }
-    slot.tree = fresh;
+    slot.tree = fresh;   // committed: the slot owns the new block from here
+    if (old) {
+        try {
+            release_tree(old);   // pooling may allocate and so may throw
+        } catch (...) {
+            delete_tree(old);
+            throw;
+        }
+    }
     return true;
 }
 

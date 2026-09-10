@@ -643,6 +643,27 @@ TEST_F(TransTablePTest, IncomparableMatchingPatternsAreTriedMostGenericFirst)
     EXPECT_EQ(hit->least_win[1], 0);
 }
 
+TEST_F(TransTablePTest, AmongEquallyGenericPatternsTheOlderIsTriedFirst)
+{
+    // Arrange: two incomparable patterns of equal weight in the same bucket
+    // (same first relevant suit and top-card owner), both matching `pos`.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A", "A"), node(7, 12));   // older
+    store(pos, 0, win("AK"), node(8, 12));       // newer
+    ASSERT_EQ(tt_.node_count(), 2u);
+
+    // Act: both cut at this limit; the first one scanned is returned.
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 6, lower_flag);
+
+    // Assert
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->lower_bound, 7);
+}
+
 TEST_F(TransTablePTest, PatternsWhoseFirstRelevantSuitDiffersAreAllFound)
 {
     // Arrange: one pattern per suit, each relevant only in that suit, plus a
@@ -738,6 +759,23 @@ TEST_F(TransTablePTest, ReturnAllMemoryThenMakeTtStartsFresh)
     EXPECT_EQ(lookup(pos, 0, 6, lower_flag), nullptr);
     store(pos, 0, win("A"), node(7, 12));
     EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
+}
+
+TEST_F(TransTablePTest, PooledBlockPointerStorageCountsTowardsMemoryInUse)
+{
+    // Arrange: one shape with a full block and nothing pooled yet.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    const char* spades[] = {"A", "AK", "AKQ", "AKQJ", "AKQJT", "AKQJT9", "AKQJT98", "AKQJT987"};
+    for (const char* s : spades) store(pos, 0, win(s), node(7, 12));
+    const double before_kb = tt_.memory_in_use();
+
+    // Act: an ordinary reset pools the block; the shape table keeps its size.
+    tt_.reset_memory(ResetReason::NewDeal);
+
+    // Assert: the pool's pointer storage is part of the footprint.
+    EXPECT_GT(tt_.memory_in_use(), before_kb);
 }
 
 TEST_F(TransTablePTest, ReturnAllMemoryLeavesNothingAllocated)

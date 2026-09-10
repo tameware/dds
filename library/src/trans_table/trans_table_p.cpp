@@ -22,7 +22,7 @@
 
    The patterns of a shape live in one contiguous array, grouped into buckets
    by the owner of the top card of the pattern's first relevant suit, and
-   within a bucket ordered by generality (fewest relevant cards first, newest
+   within a bucket ordered by generality (fewest relevant cards first, oldest
    first among equals): general patterns match the most positions, so trying
    them first gives the earliest cut-offs. A lookup scans, with a fixed
    stride, only the buckets its own top cards allow.
@@ -160,9 +160,6 @@ auto TransTableP::return_all_memory() -> void
 {
     delete_trees();
     free_spare_trees();
-    for (auto& spares : spare_trees_) {
-        std::vector<PatternTree*>().swap(spares);
-    }
     std::vector<ShapeSlot>().swap(shapes_);
     std::vector<Ownership>().swap(ownership_);   // init() rebuilds it per deal
 }
@@ -170,7 +167,11 @@ auto TransTableP::return_all_memory() -> void
 
 auto TransTableP::dynamic_bytes() const -> std::size_t
 {
-    return tree_bytes_ + shapes_.capacity() * sizeof(ShapeSlot);
+    std::size_t pool_bytes = 0;
+    for (const auto& spares : spare_trees_) {
+        pool_bytes += spares.capacity() * sizeof(PatternTree*);
+    }
+    return tree_bytes_ + pool_bytes + shapes_.capacity() * sizeof(ShapeSlot);
 }
 
 
@@ -388,11 +389,13 @@ auto TransTableP::delete_trees() -> void
 
 auto TransTableP::free_spare_trees() -> void
 {
+    // Used only on over-budget and teardown paths, so the pointer storage
+    // goes too; it counts against the budget like everything else.
     for (auto& spares : spare_trees_) {
         for (PatternTree* tree : spares) {
             delete_tree(tree);
         }
-        spares.clear();
+        std::vector<PatternTree*>().swap(spares);
     }
 }
 

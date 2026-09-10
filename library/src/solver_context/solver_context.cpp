@@ -286,8 +286,9 @@ auto SolverContext::configure_tt(TTKind kind, int defMB, int maxMB) -> void
   auto* tt = search_.maybe_trans_table();
   if (!tt) return; // Nothing to apply now; will take effect on lazy creation.
 
-  // If kind changes, dispose and recreate now to ensure effect is applied.
-  if (tt_kind_of(tt) != kind) {
+  // If the effective kind (environment override included, as at creation)
+  // changes, dispose and recreate now to ensure effect is applied.
+  if (tt_kind_of(tt) != tt_kind_from_environment(kind)) {
     dispose_trans_table();
     // Force immediate creation with new config to keep behavior explicit.
     (void)trans_table();

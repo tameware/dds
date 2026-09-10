@@ -8,9 +8,11 @@
 */
 
 /*
-   This is the parent class of TransTableS and TransTableL.
-   Those two are different implementations.  The S version has a
-   much smaller memory and a somewhat slower execution time.
+   This is the parent class of TransTableP, TransTableL and TransTableS.
+   They are different implementations of the same interface: P (the
+   default) stores shape-keyed relative-rank patterns, L is the paged
+   table with harvesting, and S has a much smaller memory footprint and a
+   somewhat slower execution time.
 */
 
 #pragma once
@@ -78,14 +80,17 @@ struct NodeCards // 8 bytes
 ///
 /// TransTable defines the interface for managing cached positions during
 /// double dummy analysis. The transposition table stores previously computed
-/// results to avoid redundant search work. Two implementations are provided:
-/// - TransTableS: Memory-efficient small transposition table
+/// results to avoid redundant search work. Three implementations are provided:
+/// - TransTableP: Shape-keyed relative-rank patterns (the default)
 /// - TransTableL: Full-featured large transposition table with paging
+/// - TransTableS: Memory-efficient small transposition table
 ///
 /// \par Memory Management Strategy
-/// Implementations use different memory strategies. TransTableS uses a pool-based
-/// approach with malloc/calloc, while TransTableL uses paged memory with
-/// harvesting. Both support configurable memory limits and graceful degradation.
+/// Implementations use different memory strategies. TransTableP grows on
+/// demand and clears itself when the next allocation would exceed the maximum,
+/// TransTableL uses paged memory with harvesting, and TransTableS uses a
+/// pool-based approach with malloc/calloc. All support configurable memory
+/// limits and graceful degradation.
 ///
 /// \par Thread Safety
 /// Not thread-safe. The transposition table must be accessed from a single

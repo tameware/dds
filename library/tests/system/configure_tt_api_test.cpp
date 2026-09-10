@@ -146,6 +146,36 @@ TEST(ConfigureTtApiTest, EnvironmentOverridesTableKind)
   EXPECT_NE(nullptr, dynamic_cast<TransTableL*>(ctx.trans_table()));
 }
 
+TEST(ConfigureTtApiTest, ConfigureTtComparesTheEnvironmentResolvedKind)
+{
+  // Arrange: the environment pins the effective kind to Pattern.
+  ScopedEnv env("DDS_TT_KIND", "pattern");
+  SolverContext ctx;
+  auto* before = ctx.trans_table();
+  ASSERT_NE(nullptr, dynamic_cast<TransTableP*>(before));
+  // Give the live instance state a recreated one would not have (pointer
+  // equality alone is unreliable: a recreated object may reuse the address).
+  const int hand_lookup[DDS_SUITS][15] = {};
+  before->init(hand_lookup);
+  const double marked_kb = before->memory_in_use();
+
+  // Act: asking for Small changes nothing effective, so the instance must
+  // survive (resized in place) rather than be destroyed and recreated.
+  ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
+
+  // Assert
+  ASSERT_NE(nullptr, ctx.maybe_trans_table());
+  EXPECT_EQ(ctx.maybe_trans_table()->memory_in_use(), marked_kb);
+
+  // Act: a new override that differs from the live table must recreate it,
+  // even though the configured kind (Small) has not changed.
+  ScopedEnv env2("DDS_TT_KIND", "small");
+  ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
+
+  // Assert
+  EXPECT_NE(nullptr, dynamic_cast<TransTableS*>(ctx.maybe_trans_table()));
+}
+
 TEST(ConfigureTtApiTest, SwitchKindRecreatesTable)
 {
   // Default context (whatever kind that is, env overrides included).

@@ -57,8 +57,9 @@ its three concrete strategies, trading memory against speed.
   `TransTableP` likewise enforces only the maximum (the default merely floors
   it): it grows on demand and, when the next allocation would exceed the
   maximum, clears the whole table (`ResetReason::MemoryExhausted`) and refills
-  rather than harvesting. Freed blocks are pooled per size class, so a reset
-  does not return memory to the allocator until `return_all_memory()`.
+  rather than harvesting. The maximum is a hard cap that applies at once:
+  `set_memory_maximum` on a live table already above the new limit clears it
+  immediately rather than waiting for the next allocation.
   The header documents `0` as "unlimited" for the default limit, but `TransTableL`
   does not implement it that way — `set_memory_default(0)` yields
   `pages_default_ == 0`, and the next `reset_memory` then frees *every* pooled
@@ -73,6 +74,10 @@ its three concrete strategies, trading memory against speed.
   structures for reuse;
   `return_all_memory()` deallocates everything and the table **must** be
   re-created with `make_tt()` before further use — `init()` does not reallocate.
+  `TransTableP` refines the "retains structures" rule by reason: an ordinary
+  reset returns its pattern blocks to a per-size-class pool for reuse, whereas a
+  `MemoryExhausted` reset (including the one triggered by lowering the maximum)
+  also frees the pooled blocks, since the table is by definition over budget.
   `ResetReason` (`TooManyNodes`, `NewDeal`,
   `NewTrump`, `MemoryExhausted`, `FreeMemory`, …) records *why* a reset happened,
   accumulating a per-reason histogram for diagnostics. `TransTableL` keeps its

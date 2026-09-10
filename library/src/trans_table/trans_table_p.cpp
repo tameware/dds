@@ -107,6 +107,12 @@ auto TransTableP::set_memory_default(const int megabytes) -> void
 auto TransTableP::set_memory_maximum(const int megabytes) -> void
 {
     maximum_bytes_ = static_cast<std::size_t>(std::max(megabytes, 0)) * MiB;
+    // A hard cap applies at once: a live table already over the new limit
+    // is cleared now rather than the next time a block is allocated, since
+    // inserts into blocks with spare capacity never consult the budget.
+    if (maximum_bytes_ != 0 && !shapes_.empty() && dynamic_bytes() > maximum_bytes_) {
+        reset_memory(ResetReason::MemoryExhausted);
+    }
 }
 
 
@@ -540,29 +546,35 @@ auto TransTableP::add(
     if (slot == NoSlot || slot >= shapes_.size() || shapes_[slot].key != key) {
         slot = find_or_insert_shape(key);
     }
+
+    // Within its bucket the pattern goes before the first one with more
+    // relevant cards; an identical pattern can only sit among those with
+    // exactly as many. An existing pattern is tightened in place, which
+    // needs no capacity, so the search precedes any reservation.
+    const int bucket = bucket_of(pattern);
+    const std::uint32_t weight = weight_of(pattern);
+    std::size_t at = 0;
+    if (PatternTree* existing = shapes_[slot].tree) {
+        at = existing->bucket_begin(bucket);
+        const std::size_t end = existing->bucket_end[bucket];
+        for (; at < end; ++at) {
+            PatternNode& stored = (*existing)[at];
+            const std::uint32_t stored_weight = weight_of(stored.key);
+            if (stored_weight > weight) {
+                break;
+            }
+            if (stored_weight == weight && same_pattern(stored.key, pattern)) {
+                tighten(stored.cards, cards, flag);
+                return;
+            }
+        }
+    }
+
+    // Growing a block copies the nodes in order, so `at` stays valid.
     if (!reserve_one_more(shapes_[slot])) {
         return;   // the table was just reset; drop this entry
     }
     PatternTree& tree = *shapes_[slot].tree;
-
-    // Within its bucket the pattern goes before the first one with more
-    // relevant cards; an identical pattern can only sit among those with
-    // exactly as many.
-    const int bucket = bucket_of(pattern);
-    const std::uint32_t weight = weight_of(pattern);
-    std::size_t at = tree.bucket_begin(bucket);
-    const std::size_t end = tree.bucket_end[bucket];
-    for (; at < end; ++at) {
-        const std::uint32_t stored = weight_of(tree[at].key);
-        if (stored > weight) {
-            break;
-        }
-        if (stored == weight && same_pattern(tree[at].key, pattern)) {
-            tighten(tree[at].cards, cards, flag);
-            return;
-        }
-    }
-
     tree.insert(at, PatternNode{pattern, cards});
     for (int b = bucket; b < BucketCount; ++b) {
         ++tree.bucket_end[b];

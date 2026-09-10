@@ -153,6 +153,27 @@ auto full_deal_position(const TestDeal& deal) -> TestPosition
     return TestPosition::remaining(deal, AllRanks, AllRanks, AllRanks, AllRanks);
 }
 
+/// A random legal position of `deal`: `tricks_played` whole tricks of random
+/// cards have been removed.
+auto random_position(const TestDeal& deal, std::mt19937& rng, int tricks_played) -> TestPosition
+{
+    TestPosition pos;
+    for (int s = 0; s < DDS_SUITS; ++s) pos.aggr[s] = 0x1fff;
+    for (int t = 0; t < tricks_played; ++t) {
+        for (int h = 0; h < DDS_HANDS; ++h) {
+            std::vector<std::pair<int, int>> held;
+            for (int s = 0; s < DDS_SUITS; ++s)
+                for (int r = 2; r <= 14; ++r)
+                    if ((pos.aggr[s] & (1u << (r - 2))) && deal.hand_lookup[s][r] == h)
+                        held.emplace_back(s, r);
+            const auto [s, r] = held[std::uniform_int_distribution<size_t>(0, held.size() - 1)(rng)];
+            pos.aggr[s] = static_cast<unsigned short>(pos.aggr[s] & ~(1u << (r - 2)));
+        }
+    }
+    pos.finish(deal);
+    return pos;
+}
+
 auto node(int lower, int upper, int best_suit = 0, int best_rank = 0) -> NodeCards
 {
     NodeCards cards{};
@@ -179,6 +200,29 @@ auto win(const std::string& spades,
     w.ranks[2] = ranks(diamonds);
     w.ranks[3] = ranks(clubs);
     return w;
+}
+
+/// Random winning ranks drawn from the cards still in play.
+auto random_win_ranks(const TestPosition& pos, std::mt19937& rng) -> WinRanks
+{
+    WinRanks w;
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        w.ranks[s] = static_cast<unsigned short>(
+            pos.aggr[s] & std::uniform_int_distribution<int>(0, 0x1fff)(rng));
+    }
+    return w;
+}
+
+/// One lookup-then-add of a random position, the way the search does it.
+void add_random_entry(TransTableP& tt, const TestDeal& deal, std::mt19937& rng, int i)
+{
+    const auto pos = random_position(deal, rng, 1 + (i % 6));
+    const auto w = random_win_ranks(pos, rng);
+    const int hand = std::uniform_int_distribution<int>(0, 3)(rng);
+    const int lo = std::uniform_int_distribution<int>(0, 13)(rng);
+    bool lower_flag = false;
+    (void)tt.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, -1, lower_flag);
+    tt.add(pos.tricks, hand, pos.aggr, w.ranks, node(lo, 13), true);
 }
 
 class TransTablePTest : public ::testing::Test
@@ -701,39 +745,13 @@ TEST(TransTablePMemoryTest, StaysWithinTheMaximumAndResetsWhenExhausted)
     const auto deal = TestDeal::random(rng);
     tt.init(deal.hand_lookup);
     const double baseline_kb = tt.memory_in_use();
-    std::uniform_int_distribution<int> pick_hand(0, 3);
-    std::uniform_int_distribution<int> pick_bound(0, 13);
     size_t max_nodes_seen = 0;
     bool shrank_at_some_point = false;
 
     // Act
     for (int i = 0; i < 200000; ++i) {
-        // Random legal position: play whole tricks of random cards.
-        TestPosition pos;
-        for (int s = 0; s < DDS_SUITS; ++s) pos.aggr[s] = 0x1fff;
-        const int tricks_played = 1 + (i % 6);
-        for (int t = 0; t < tricks_played; ++t) {
-            for (int h = 0; h < DDS_HANDS; ++h) {
-                std::vector<std::pair<int, int>> held;
-                for (int s = 0; s < DDS_SUITS; ++s)
-                    for (int r = 2; r <= 14; ++r)
-                        if ((pos.aggr[s] & (1u << (r - 2))) && deal.hand_lookup[s][r] == h)
-                            held.emplace_back(s, r);
-                const auto [s, r] = held[std::uniform_int_distribution<size_t>(0, held.size() - 1)(rng)];
-                pos.aggr[s] = static_cast<unsigned short>(pos.aggr[s] & ~(1u << (r - 2)));
-            }
-        }
-        pos.finish(deal);
-        WinRanks w;
-        for (int s = 0; s < DDS_SUITS; ++s) {
-            w.ranks[s] = static_cast<unsigned short>(pos.aggr[s] & std::uniform_int_distribution<int>(0, 0x1fff)(rng));
-        }
-        const int lo = pick_bound(rng);
-        const int hand = pick_hand(rng);
-        bool lower_flag = false;
-        (void)tt.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, -1, lower_flag);
         const size_t before = tt.node_count();
-        tt.add(pos.tricks, hand, pos.aggr, w.ranks, node(lo, 13), true);
+        add_random_entry(tt, deal, rng, i);
         if (tt.node_count() < before) shrank_at_some_point = true;
         max_nodes_seen = std::max(max_nodes_seen, tt.node_count());
         ASSERT_LE(tt.memory_in_use(), baseline_kb + 2 * 1024.0 + 1.0);
@@ -742,6 +760,83 @@ TEST(TransTablePMemoryTest, StaysWithinTheMaximumAndResetsWhenExhausted)
     // Assert
     EXPECT_TRUE(shrank_at_some_point) << "the table never hit its limit";
     EXPECT_GT(max_nodes_seen, 1000u);
+}
+
+TEST(TransTablePMemoryTest, LoweringTheMaximumBelowCurrentUsageIsEnforcedImmediately)
+{
+    // Arrange: a roomy table filled well past the 1 MB it is about to be given.
+    TransTableP tt;
+    tt.set_memory_default(16);
+    tt.set_memory_maximum(32);
+    tt.make_tt();
+    std::mt19937 rng(11);
+    const auto deal = TestDeal::random(rng);
+    tt.init(deal.hand_lookup);
+    const double baseline_kb = tt.memory_in_use();
+    int i = 0;
+    while (tt.memory_in_use() < baseline_kb + 3 * 1024.0 && i < 400000) {
+        add_random_entry(tt, deal, rng, i++);
+    }
+    ASSERT_GT(tt.memory_in_use(), baseline_kb + 3 * 1024.0) << "could not fill the table";
+
+    // Act
+    tt.set_memory_maximum(1);
+
+    // Assert: over-budget contents are reclaimed at once, and the new cap holds
+    // for later inserts, including those that fit into existing blocks.
+    EXPECT_LE(tt.memory_in_use(), baseline_kb + 1024.0 + 1.0);
+    for (int j = 0; j < 100000; ++j) {
+        add_random_entry(tt, deal, rng, j);
+        ASSERT_LE(tt.memory_in_use(), baseline_kb + 1024.0 + 1.0);
+    }
+}
+
+TEST(TransTablePMemoryTest, LoweringTheMaximumWhileStillWithinItKeepsTheContents)
+{
+    // Arrange
+    TransTableP tt;
+    tt.set_memory_default(16);
+    tt.set_memory_maximum(32);
+    tt.make_tt();
+    std::mt19937 rng(13);
+    const auto deal = TestDeal::random(rng);
+    tt.init(deal.hand_lookup);
+    for (int i = 0; i < 2000; ++i) add_random_entry(tt, deal, rng, i);
+    const size_t nodes_before = tt.node_count();
+    ASSERT_GT(nodes_before, 0u);
+    ASSERT_LT(tt.memory_in_use(), 4 * 1024.0);
+
+    // Act
+    tt.set_memory_maximum(4);
+
+    // Assert
+    EXPECT_EQ(tt.node_count(), nodes_before);
+}
+
+TEST_F(TransTablePTest, ReAddingAPatternToAFullTreeTightensInPlaceWithoutGrowingIt)
+{
+    // Arrange: exactly fill a fresh tree (InitialTreeNodes = 8) with distinct
+    // patterns of one shape.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    const char* spades[] = {"A", "AK", "AKQ", "AKQJ", "AKQJT", "AKQJT9", "AKQJT98", "AKQJT987"};
+    for (const char* s : spades) store(pos, 0, win(s), node(7, 12));
+    ASSERT_EQ(tt_.node_count(), 8u);
+    const double before_kb = tt_.memory_in_use();
+
+    // Act: re-add the first pattern with tighter bounds.
+    store(pos, 0, win("A"), node(8, 11));
+
+    // Assert: tightened in place; no block was grown (or the table reset).
+    EXPECT_EQ(tt_.node_count(), 8u);
+    EXPECT_EQ(tt_.memory_in_use(), before_kb);
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 7, lower_flag);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_TRUE(lower_flag);
+    EXPECT_EQ(hit->lower_bound, 8);
+    EXPECT_EQ(hit->upper_bound, 11);
 }
 
 // ---------------------------------------------------------------------------

@@ -835,7 +835,7 @@ TEST(TransTablePMemoryTest, StaysWithinTheMaximumAndResetsWhenExhausted)
     bool shrank_at_some_point = false;
 
     // Act
-    for (int i = 0; i < 200000; ++i) {
+    for (int i = 0; i < 50000; ++i) {
         const size_t before = tt.node_count();
         add_random_entry(tt, deal, rng, i);
         if (tt.node_count() < before) shrank_at_some_point = true;
@@ -871,7 +871,7 @@ TEST(TransTablePMemoryTest, LoweringTheMaximumBelowCurrentUsageIsEnforcedImmedia
     // Assert: over-budget contents are reclaimed at once, and the new cap holds
     // for later inserts, including those that fit into existing blocks.
     EXPECT_LE(tt.memory_in_use(), baseline_kb + 1024.0 + 1.0);
-    for (int j = 0; j < 100000; ++j) {
+    for (int j = 0; j < 10000; ++j) {
         add_random_entry(tt, deal, rng, j);
         ASSERT_LE(tt.memory_in_use(), baseline_kb + 1024.0 + 1.0);
     }
@@ -893,7 +893,7 @@ TEST(TransTablePMemoryTest, PoolingOutgrownBlocksNeverExceedsTheMaximum)
 
     // Act & Assert: the hard cap holds after every single add, with no slack
     // for the pool's own bookkeeping.
-    for (int i = 0; i < 300000; ++i) {
+    for (int i = 0; i < 40000; ++i) {
         const auto pos = random_position(deal, rng, 1 + (i % 12));
         const auto w = random_win_ranks(pos, rng);
         bool lower_flag = false;

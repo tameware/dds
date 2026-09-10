@@ -149,8 +149,10 @@ auto TransTableP::reset_memory(const ResetReason reason) -> void
     } else {
         release_trees();
     }
-    std::vector<ShapeSlot> fresh(InitialShapes);
-    shapes_.swap(fresh);
+    // Free the old shape table before allocating the fresh one, so that a
+    // reset never allocates on top of the storage it is about to drop.
+    std::vector<ShapeSlot>().swap(shapes_);
+    shapes_.resize(InitialShapes);
 }
 
 
@@ -437,7 +439,8 @@ auto TransTableP::find_shape(const std::uint64_t key) const -> std::size_t
 auto TransTableP::grow_shapes() -> void
 {
     const std::size_t new_size = shapes_.size() * 2;
-    if (new_size * sizeof(ShapeSlot) + tree_bytes_ > maximum_bytes_) {
+    // Old and new tables are both live during the rehash, so budget the peak.
+    if (dynamic_bytes() + new_size * sizeof(ShapeSlot) > maximum_bytes_) {
         reset_memory(ResetReason::MemoryExhausted);
         return;
     }

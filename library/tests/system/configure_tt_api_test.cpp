@@ -5,6 +5,7 @@
 /// switching kinds, and lazy initialization of transposition tables.
 
 #include <cstdlib>
+#include <string>
 
 #include <gtest/gtest.h>
 
@@ -28,17 +29,25 @@ void set_env_var(const char* name, const char* value)
 #endif
 }
 
+/// Overrides (or, with a null value, removes) an environment variable for
+/// the lifetime of the guard and then restores whatever was there before.
 struct ScopedEnv
 {
   ScopedEnv(const char* name, const char* value) : name_(name)
   {
+    if (const char* old = std::getenv(name)) {
+      had_old_ = true;
+      old_ = old;
+    }
     set_env_var(name, value);
   }
   ~ScopedEnv()
   {
-    set_env_var(name_, nullptr);
+    set_env_var(name_, had_old_ ? old_.c_str() : nullptr);
   }
   const char* name_;
+  bool had_old_ = false;
+  std::string old_;
 };
 
 auto kind_of(const TransTable* tt) -> TTKind
@@ -48,10 +57,32 @@ auto kind_of(const TransTable* tt) -> TTKind
   return TTKind::Large;
 }
 
+TEST(ConfigureTtApiTest, ScopedEnvRestoresThePreviousValueAndAbsence)
+{
+  // Arrange
+  const char* name = "DDS_TEST_SCOPED_ENV";
+  set_env_var(name, "before");
+
+  // Act & Assert: an override is undone, and so is a removal.
+  {
+    ScopedEnv overridden(name, "during");
+    EXPECT_STREQ(std::getenv(name), "during");
+  }
+  EXPECT_STREQ(std::getenv(name), "before");
+  {
+    ScopedEnv removed(name, nullptr);
+    EXPECT_EQ(std::getenv(name), nullptr);
+  }
+  EXPECT_STREQ(std::getenv(name), "before");
+
+  set_env_var(name, nullptr);
+  EXPECT_EQ(std::getenv(name), nullptr);
+}
+
 TEST(ConfigureTtApiTest, DefaultConfigurationUsesThePatternTable)
 {
   // Arrange: no explicit kind anywhere (and no environment override).
-  set_env_var("DDS_TT_KIND", nullptr);
+  ScopedEnv no_override("DDS_TT_KIND", nullptr);
   SolverConfig cfg;
   SolverContext configured(cfg);
   SolverContext bare;

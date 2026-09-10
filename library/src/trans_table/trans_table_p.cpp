@@ -350,7 +350,20 @@ auto TransTableP::acquire_tree(const std::size_t capacity) -> PatternTree*
 
 auto TransTableP::release_tree(PatternTree* tree) -> void
 {
-    spare_trees_[size_class(tree->capacity)].push_back(tree);
+    auto& spares = spare_trees_[size_class(tree->capacity)];
+    if (spares.size() == spares.capacity()) {
+        // The pool's pointer storage counts against the budget too. If
+        // growing it would breach the cap, the block goes back to the
+        // allocator instead of the pool.
+        const std::size_t grown = std::max<std::size_t>(4, 2 * spares.capacity());
+        const std::size_t growth = (grown - spares.capacity()) * sizeof(PatternTree*);
+        if (dynamic_bytes() + growth > maximum_bytes_) {
+            delete_tree(tree);
+            return;
+        }
+        spares.reserve(grown);
+    }
+    spares.push_back(tree);
 }
 
 

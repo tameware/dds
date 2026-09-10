@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <numeric>
@@ -874,6 +875,34 @@ TEST(TransTablePMemoryTest, LoweringTheMaximumBelowCurrentUsageIsEnforcedImmedia
         add_random_entry(tt, deal, rng, j);
         ASSERT_LE(tt.memory_in_use(), baseline_kb + 1024.0 + 1.0);
     }
+}
+
+TEST(TransTablePMemoryTest, PoolingOutgrownBlocksNeverExceedsTheMaximum)
+{
+    // Arrange: a tiny cap and deep positions, so that many shapes hold small
+    // blocks that keep outgrowing (and pooling) their storage near the cap.
+    TransTableP tt;
+    tt.set_memory_default(1);
+    tt.set_memory_maximum(2);
+    tt.make_tt();
+    std::mt19937 rng(17);
+    const auto deal = TestDeal::random(rng);
+    tt.init(deal.hand_lookup);
+    const double cap_kb = tt.memory_in_use() + 2 * 1024.0;
+    size_t max_shapes = 0;
+
+    // Act & Assert: the hard cap holds after every single add, with no slack
+    // for the pool's own bookkeeping.
+    for (int i = 0; i < 300000; ++i) {
+        const auto pos = random_position(deal, rng, 1 + (i % 12));
+        const auto w = random_win_ranks(pos, rng);
+        bool lower_flag = false;
+        (void)tt.lookup(pos.tricks, 0, pos.aggr, pos.hand_dist, -1, lower_flag);
+        tt.add(pos.tricks, 0, pos.aggr, w.ranks, node(0, 13), true);
+        max_shapes = std::max(max_shapes, tt.shape_count());
+        ASSERT_LE(tt.memory_in_use(), cap_kb) << "after add " << i;
+    }
+    EXPECT_GT(max_shapes, 4000u) << "not enough blocks to make pooling costly";
 }
 
 TEST(TransTablePMemoryTest, LoweringTheMaximumWhileStillWithinItKeepsTheContents)

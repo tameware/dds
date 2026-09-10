@@ -113,6 +113,36 @@ class TestWindowsMsvcCppoptsAvoidD9025(unittest.TestCase):
                 f"{label} must not set /std:; MSVC default_cpp_std is C++20",
             )
 
+    def test_windows_cppopts_set_source_charset_utf8(self) -> None:
+        """BOM-less UTF-8 sources make MSVC fall back to the system ANSI
+        codepage; below CP1252 that raises C4819, which /WX turns into C2220.
+        """
+        text = (_repo_root() / "CPPVARIABLES.bzl").read_text(encoding="utf-8")
+        for label, block in (
+            ("build_windows", _windows_cppopts_block(text)),
+            ("debug_build_windows", _debug_windows_cppopts_block(text)),
+        ):
+            self.assertIn(
+                '"/utf-8"',
+                block,
+                f"{label} must pass /utf-8 so MSVC reads UTF-8 sources on any host codepage",
+            )
+
+    def test_windows_bazelrc_does_not_set_utf8_cxxopt(self) -> None:
+        """/utf-8 is MSVC-only. A build:windows --cxxopt keys off the host OS,
+        so it also reaches wasm transitions, where clang fails with
+        "no such file or directory: '/utf-8'".
+        """
+        bazelrc = (_repo_root() / ".bazelrc").read_text(encoding="utf-8")
+        for flag in ("--cxxopt", "--host_cxxopt"):
+            self.assertIsNone(
+                re.search(
+                    rf"(?m)^build:windows\s+{re.escape(flag)}=/utf-8\b",
+                    bazelrc,
+                ),
+                f"build:windows must not set {flag}=/utf-8 (leaks into wasm)",
+            )
+
     def test_windows_bazelrc_keeps_default_cpp_std_without_host_cxxopt(self) -> None:
         """default_cpp_std (patched to /std:c++20) covers googletest and every
         MSVC cc_* compile. Do not disable it, and do not add build:windows

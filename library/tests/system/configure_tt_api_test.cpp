@@ -95,7 +95,8 @@ TEST(ConfigureTtApiTest, DefaultConfigurationUsesThePatternTable)
 
 TEST(ConfigureTtApiTest, PatternKindCreatesPatternTable)
 {
-  // Arrange
+  // Arrange: explicit kind, isolated from any ambient override.
+  ScopedEnv no_override("DDS_TT_KIND", nullptr);
   SolverConfig cfg;
   cfg.tt_kind_ = TTKind::Pattern;
   SolverContext ctx(cfg);
@@ -110,7 +111,8 @@ TEST(ConfigureTtApiTest, PatternKindCreatesPatternTable)
 
 TEST(ConfigureTtApiTest, SwitchingToPatternRecreatesAndResizingKeepsInstance)
 {
-  // Arrange: start from the Large table.
+  // Arrange: start from the Large table, isolated from any ambient override.
+  ScopedEnv no_override("DDS_TT_KIND", nullptr);
   SolverConfig cfg;
   cfg.tt_kind_ = TTKind::Large;
   SolverContext ctx(cfg);
@@ -178,7 +180,9 @@ TEST(ConfigureTtApiTest, ConfigureTtComparesTheEnvironmentResolvedKind)
 
 TEST(ConfigureTtApiTest, SwitchKindRecreatesTable)
 {
-  // Default context (whatever kind that is, env overrides included).
+  // Default context, isolated from any ambient override (override behaviour
+  // is covered by the Environment* tests).
+  ScopedEnv no_override("DDS_TT_KIND", nullptr);
   SolverContext ctx;
   auto* tt1 = ctx.trans_table();
   ASSERT_NE(tt1, nullptr);

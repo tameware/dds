@@ -22,40 +22,40 @@ namespace {
 /// Optional DDS_TT_KIND=small|large|pattern override of the configured kind.
 auto tt_kind_from_environment(TTKind configured) -> TTKind
 {
-  const char* s = std::getenv("DDS_TT_KIND");
-  if (s == nullptr) return configured;
-  const std::string value(s);
-  if (value == "small") return TTKind::Small;
-  if (value == "large") return TTKind::Large;
-  if (value == "pattern") return TTKind::Pattern;
-  return configured;
+    const char* s = std::getenv("DDS_TT_KIND");
+    if (s == nullptr) return configured;
+    const std::string value(s);
+    if (value == "small") return TTKind::Small;
+    if (value == "large") return TTKind::Large;
+    if (value == "pattern") return TTKind::Pattern;
+    return configured;
 }
 
 auto tt_kind_of(const TransTable* tt) -> TTKind
 {
-  if (dynamic_cast<const TransTableS*>(tt) != nullptr) return TTKind::Small;
-  if (dynamic_cast<const TransTableP*>(tt) != nullptr) return TTKind::Pattern;
-  return TTKind::Large;
+    if (dynamic_cast<const TransTableS*>(tt) != nullptr) return TTKind::Small;
+    if (dynamic_cast<const TransTableP*>(tt) != nullptr) return TTKind::Pattern;
+    return TTKind::Large;
 }
 
 auto tt_kind_letter(TTKind kind) -> char
 {
-  switch (kind) {
-    case TTKind::Small: return 'S';
-    case TTKind::Pattern: return 'P';
-    case TTKind::Large: break;
-  }
-  return 'L';
+    switch (kind) {
+        case TTKind::Small: return 'S';
+        case TTKind::Pattern: return 'P';
+        case TTKind::Large: break;
+    }
+    return 'L';
 }
 
 auto make_trans_table(TTKind kind) -> std::unique_ptr<TransTable>
 {
-  switch (kind) {
-    case TTKind::Small: return std::make_unique<TransTableS>();
-    case TTKind::Pattern: return std::make_unique<TransTableP>();
-    case TTKind::Large: break;
-  }
-  return std::make_unique<TransTableL>();
+    switch (kind) {
+        case TTKind::Small: return std::make_unique<TransTableS>();
+        case TTKind::Pattern: return std::make_unique<TransTableP>();
+        case TTKind::Large: break;
+    }
+    return std::make_unique<TransTableL>();
 }
 
 #if defined(DDS_TOP_LEVEL) || defined(DDS_AB_STATS) || defined(DDS_AB_HITS) || \

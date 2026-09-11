@@ -20,12 +20,12 @@ namespace {
 void set_env_var(const char* name, const char* value)
 {
 #ifdef _WIN32
-  _putenv_s(name, value != nullptr ? value : "");
+    _putenv_s(name, value != nullptr ? value : "");
 #else
-  if (value == nullptr || value[0] == '\0')
-    unsetenv(name);
-  else
-    setenv(name, value, 1);
+    if (value == nullptr || value[0] == '\0')
+        unsetenv(name);
+    else
+        setenv(name, value, 1);
 #endif
 }
 
@@ -33,149 +33,149 @@ void set_env_var(const char* name, const char* value)
 /// the lifetime of the guard and then restores whatever was there before.
 struct ScopedEnv
 {
-  ScopedEnv(const char* name, const char* value) : name_(name)
-  {
-    if (const char* old = std::getenv(name)) {
-      had_old_ = true;
-      old_ = old;
+    ScopedEnv(const char* name, const char* value) : name_(name)
+    {
+        if (const char* old = std::getenv(name)) {
+            had_old_ = true;
+            old_ = old;
+        }
+        set_env_var(name, value);
     }
-    set_env_var(name, value);
-  }
-  ~ScopedEnv()
-  {
-    set_env_var(name_, had_old_ ? old_.c_str() : nullptr);
-  }
-  const char* name_;
-  bool had_old_ = false;
-  std::string old_;
+    ~ScopedEnv()
+    {
+        set_env_var(name_, had_old_ ? old_.c_str() : nullptr);
+    }
+    const char* name_;
+    bool had_old_ = false;
+    std::string old_;
 };
 
 auto kind_of(const TransTable* tt) -> TTKind
 {
-  if (dynamic_cast<const TransTableS*>(tt) != nullptr) return TTKind::Small;
-  if (dynamic_cast<const TransTableP*>(tt) != nullptr) return TTKind::Pattern;
-  return TTKind::Large;
+    if (dynamic_cast<const TransTableS*>(tt) != nullptr) return TTKind::Small;
+    if (dynamic_cast<const TransTableP*>(tt) != nullptr) return TTKind::Pattern;
+    return TTKind::Large;
 }
 
 TEST(ConfigureTtApiTest, ScopedEnvRestoresThePreviousValueAndAbsence)
 {
-  // Arrange
-  const char* name = "DDS_TEST_SCOPED_ENV";
-  set_env_var(name, "before");
+    // Arrange
+    const char* name = "DDS_TEST_SCOPED_ENV";
+    set_env_var(name, "before");
 
-  // Act & Assert: an override is undone, and so is a removal.
-  {
-    ScopedEnv overridden(name, "during");
-    EXPECT_STREQ(std::getenv(name), "during");
-  }
-  EXPECT_STREQ(std::getenv(name), "before");
-  {
-    ScopedEnv removed(name, nullptr);
+    // Act & Assert: an override is undone, and so is a removal.
+    {
+        ScopedEnv overridden(name, "during");
+        EXPECT_STREQ(std::getenv(name), "during");
+    }
+    EXPECT_STREQ(std::getenv(name), "before");
+    {
+        ScopedEnv removed(name, nullptr);
+        EXPECT_EQ(std::getenv(name), nullptr);
+    }
+    EXPECT_STREQ(std::getenv(name), "before");
+
+    set_env_var(name, nullptr);
     EXPECT_EQ(std::getenv(name), nullptr);
-  }
-  EXPECT_STREQ(std::getenv(name), "before");
-
-  set_env_var(name, nullptr);
-  EXPECT_EQ(std::getenv(name), nullptr);
 }
 
 TEST(ConfigureTtApiTest, DefaultConfigurationUsesThePatternTable)
 {
-  // Arrange: no explicit kind anywhere (and no environment override).
-  ScopedEnv no_override("DDS_TT_KIND", nullptr);
-  SolverConfig cfg;
-  SolverContext configured(cfg);
-  SolverContext bare;
+    // Arrange: no explicit kind anywhere (and no environment override).
+    ScopedEnv no_override("DDS_TT_KIND", nullptr);
+    SolverConfig cfg;
+    SolverContext configured(cfg);
+    SolverContext bare;
 
-  // Act & Assert
-  EXPECT_EQ(cfg.tt_kind_, TTKind::Pattern);
-  EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(configured.trans_table()));
-  EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(bare.trans_table()));
+    // Act & Assert
+    EXPECT_EQ(cfg.tt_kind_, TTKind::Pattern);
+    EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(configured.trans_table()));
+    EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(bare.trans_table()));
 }
 
 TEST(ConfigureTtApiTest, PatternKindCreatesPatternTable)
 {
-  // Arrange: explicit kind, isolated from any ambient override.
-  ScopedEnv no_override("DDS_TT_KIND", nullptr);
-  SolverConfig cfg;
-  cfg.tt_kind_ = TTKind::Pattern;
-  SolverContext ctx(cfg);
+    // Arrange: explicit kind, isolated from any ambient override.
+    ScopedEnv no_override("DDS_TT_KIND", nullptr);
+    SolverConfig cfg;
+    cfg.tt_kind_ = TTKind::Pattern;
+    SolverContext ctx(cfg);
 
-  // Act
-  auto* tt = ctx.trans_table();
+    // Act
+    auto* tt = ctx.trans_table();
 
-  // Assert
-  ASSERT_NE(tt, nullptr);
-  EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(tt));
+    // Assert
+    ASSERT_NE(tt, nullptr);
+    EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(tt));
 }
 
 TEST(ConfigureTtApiTest, SwitchingToPatternRecreatesAndResizingKeepsInstance)
 {
-  // Arrange: start from the Large table, isolated from any ambient override.
-  ScopedEnv no_override("DDS_TT_KIND", nullptr);
-  SolverConfig cfg;
-  cfg.tt_kind_ = TTKind::Large;
-  SolverContext ctx(cfg);
-  auto* large = ctx.trans_table();
-  ASSERT_NE(nullptr, dynamic_cast<TransTableL*>(large));
+    // Arrange: start from the Large table, isolated from any ambient override.
+    ScopedEnv no_override("DDS_TT_KIND", nullptr);
+    SolverConfig cfg;
+    cfg.tt_kind_ = TTKind::Large;
+    SolverContext ctx(cfg);
+    auto* large = ctx.trans_table();
+    ASSERT_NE(nullptr, dynamic_cast<TransTableL*>(large));
 
-  // Act
-  ctx.configure_tt(TTKind::Pattern, /*defMB=*/8, /*maxMB=*/16);
-  auto* pattern = ctx.maybe_trans_table();
-  ctx.configure_tt(TTKind::Pattern, /*defMB=*/16, /*maxMB=*/32);
-  auto* resized = ctx.maybe_trans_table();
+    // Act
+    ctx.configure_tt(TTKind::Pattern, /*defMB=*/8, /*maxMB=*/16);
+    auto* pattern = ctx.maybe_trans_table();
+    ctx.configure_tt(TTKind::Pattern, /*defMB=*/16, /*maxMB=*/32);
+    auto* resized = ctx.maybe_trans_table();
 
-  // Assert
-  ASSERT_NE(pattern, nullptr);
-  EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(pattern));
-  EXPECT_EQ(pattern, resized) << "same kind: resize in place";
-  ctx.configure_tt(TTKind::Large, 8, 16);
-  EXPECT_NE(nullptr, dynamic_cast<TransTableL*>(ctx.maybe_trans_table()));
+    // Assert
+    ASSERT_NE(pattern, nullptr);
+    EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(pattern));
+    EXPECT_EQ(pattern, resized) << "same kind: resize in place";
+    ctx.configure_tt(TTKind::Large, 8, 16);
+    EXPECT_NE(nullptr, dynamic_cast<TransTableL*>(ctx.maybe_trans_table()));
 }
 
 TEST(ConfigureTtApiTest, EnvironmentOverridesTableKind)
 {
-  // Arrange
-  ScopedEnv env("DDS_TT_KIND", "pattern");
-  SolverConfig cfg;
-  cfg.tt_kind_ = TTKind::Small;
-  SolverContext ctx(cfg);
+    // Arrange
+    ScopedEnv env("DDS_TT_KIND", "pattern");
+    SolverConfig cfg;
+    cfg.tt_kind_ = TTKind::Small;
+    SolverContext ctx(cfg);
 
-  // Act & Assert
-  EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(ctx.trans_table()));
-  ScopedEnv env2("DDS_TT_KIND", "large");
-  ctx.dispose_trans_table();
-  EXPECT_NE(nullptr, dynamic_cast<TransTableL*>(ctx.trans_table()));
+    // Act & Assert
+    EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(ctx.trans_table()));
+    ScopedEnv env2("DDS_TT_KIND", "large");
+    ctx.dispose_trans_table();
+    EXPECT_NE(nullptr, dynamic_cast<TransTableL*>(ctx.trans_table()));
 }
 
 TEST(ConfigureTtApiTest, ConfigureTtComparesTheEnvironmentResolvedKind)
 {
-  // Arrange: the environment pins the effective kind to Pattern.
-  ScopedEnv env("DDS_TT_KIND", "pattern");
-  SolverContext ctx;
-  auto* before = ctx.trans_table();
-  ASSERT_NE(nullptr, dynamic_cast<TransTableP*>(before));
-  // Give the live instance state a recreated one would not have (pointer
-  // equality alone is unreliable: a recreated object may reuse the address).
-  const int hand_lookup[DDS_SUITS][15] = {};
-  before->init(hand_lookup);
-  const double marked_kb = before->memory_in_use();
+    // Arrange: the environment pins the effective kind to Pattern.
+    ScopedEnv env("DDS_TT_KIND", "pattern");
+    SolverContext ctx;
+    auto* before = ctx.trans_table();
+    ASSERT_NE(nullptr, dynamic_cast<TransTableP*>(before));
+    // Give the live instance state a recreated one would not have (pointer
+    // equality alone is unreliable: a recreated object may reuse the address).
+    const int hand_lookup[DDS_SUITS][15] = {};
+    before->init(hand_lookup);
+    const double marked_kb = before->memory_in_use();
 
-  // Act: asking for Small changes nothing effective, so the instance must
-  // survive (resized in place) rather than be destroyed and recreated.
-  ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
+    // Act: asking for Small changes nothing effective, so the instance must
+    // survive (resized in place) rather than be destroyed and recreated.
+    ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
 
-  // Assert
-  ASSERT_NE(nullptr, ctx.maybe_trans_table());
-  EXPECT_EQ(ctx.maybe_trans_table()->memory_in_use(), marked_kb);
+    // Assert
+    ASSERT_NE(nullptr, ctx.maybe_trans_table());
+    EXPECT_EQ(ctx.maybe_trans_table()->memory_in_use(), marked_kb);
 
-  // Act: a new override that differs from the live table must recreate it,
-  // even though the configured kind (Small) has not changed.
-  ScopedEnv env2("DDS_TT_KIND", "small");
-  ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
+    // Act: a new override that differs from the live table must recreate it,
+    // even though the configured kind (Small) has not changed.
+    ScopedEnv env2("DDS_TT_KIND", "small");
+    ctx.configure_tt(TTKind::Small, /*defMB=*/8, /*maxMB=*/8);
 
-  // Assert
-  EXPECT_NE(nullptr, dynamic_cast<TransTableS*>(ctx.maybe_trans_table()));
+    // Assert
+    EXPECT_NE(nullptr, dynamic_cast<TransTableS*>(ctx.maybe_trans_table()));
 }
 
 TEST(ConfigureTtApiTest, SwitchKindRecreatesTable)

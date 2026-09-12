@@ -217,8 +217,11 @@ auto TransTableP::shape_count() const -> std::size_t
 auto TransTableP::shape_key(const int trick, const int hand, const int hand_dist[])
     -> std::uint64_t
 {
-    // hand_dist holds 12 bits per hand (spades, hearts, diamonds; clubs are
-    // implied by the trick). trick + 1 keeps the key non-zero.
+    // hand_dist holds 12 bits per hand (spades, hearts, diamonds). The search
+    // consults the table only at trick boundaries (ab_search_0), where every
+    // hand holds trick + 1 cards, so the club length is implied - the same
+    // derivation TransTableL::dist_to_lengths uses. trick + 1 keeps the key
+    // non-zero.
     return (static_cast<std::uint64_t>(trick + 1) << 50) |
         (static_cast<std::uint64_t>(hand) << 48) |
         (static_cast<std::uint64_t>(hand_dist[0]) << 36) |

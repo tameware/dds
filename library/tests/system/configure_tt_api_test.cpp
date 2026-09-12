@@ -5,10 +5,12 @@
 /// switching kinds, and lazy initialization of transposition tables.
 
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <gtest/gtest.h>
 
+#include <api/solve_board.hpp>
 #include <solver_context/solver_context.hpp>
 #include <trans_table/trans_table_l.hpp>
 #include <trans_table/trans_table_p.hpp>
@@ -160,6 +162,76 @@ TEST(ConfigureTtApiTest, AMaximumOnlyConfigurationIsHonouredOnLazyCreation)
 
     // Assert
     EXPECT_TRUE(stays_under(*tt, cap_kb));
+}
+
+/// Solves the known deal from examples/hands.cpp (hand 0) in notrump with `ctx`.
+auto solve_known_deal(SolverContext& ctx, FutureTricks& fut) -> int
+{
+    DealPBN dl{};
+    dl.trump = 4;
+    dl.first = 0;
+    std::strcpy(dl.remainCards, "N:QJ6.K652.J85.T98 873.J97.AT764.Q4 K5.T83.KQ9.A7652 AT942.AQ4.32.KJ3");
+    return solve_board_pbn(ctx, dl, /*target=*/-1, /*solutions=*/1, /*mode=*/1, &fut);
+}
+
+/// A table recreated between two solves of the same deal has not seen that
+/// deal; the next solve must initialise it again rather than run against an
+/// inert (never init()-ed) cache.
+TEST(ConfigureTtApiTest, ATableRecreatedBetweenSolvesOfTheSameDealIsInitialisedAgain)
+{
+    // Arrange: one solve, then a kind change and back, which recreates the table.
+    ScopedEnv no_kind("DDS_TT_KIND", nullptr);
+    SolverContext ctx;
+    FutureTricks first{};
+    ASSERT_EQ(solve_known_deal(ctx, first), RETURN_NO_FAULT);
+    ctx.configure_tt(TTKind::Large, 8, 16);
+    ctx.configure_tt(TTKind::Pattern, 8, 16);
+    auto* recreated = dynamic_cast<TransTableP*>(ctx.maybe_trans_table());
+    ASSERT_NE(recreated, nullptr);
+    ASSERT_EQ(recreated->node_count(), 0u);
+
+    // Act: the same deal again.
+    FutureTricks again{};
+    ASSERT_EQ(solve_known_deal(ctx, again), RETURN_NO_FAULT);
+
+    // Assert: same answer, and the cache was actually in use.
+    EXPECT_EQ(again.score[0], first.score[0]);
+    EXPECT_GT(recreated->node_count(), 0u);
+}
+
+/// Reconfiguring a live table with unset limits must resolve them the same
+/// way lazy creation does, not hand the table a zero maximum.
+TEST(ConfigureTtApiTest, ReconfiguringALiveTableWithUnsetLimitsResolvesThem)
+{
+    // Arrange
+    ScopedEnv no_kind("DDS_TT_KIND", nullptr);
+    ScopedEnv no_default("DDS_TT_DEFAULT_MB", nullptr);
+    ScopedEnv no_limit("DDS_TT_LIMIT_MB", nullptr);
+    SolverConfig cfg;
+    cfg.tt_kind_ = TTKind::Pattern;
+    SolverContext ctx(cfg);
+    auto* tt = dynamic_cast<TransTableP*>(ctx.trans_table());
+    ASSERT_NE(tt, nullptr);
+    init_rotating_deal(*tt);
+
+    // Act
+    ctx.configure_tt(TTKind::Pattern, /*defMB=*/0, /*maxMB=*/0);
+
+    // Assert: a few hundred shapes fit comfortably; a zero maximum would
+    // clear the table on every allocation and keep it near empty.
+    const unsigned short aggr[DDS_SUITS] = {0x1fff, 0x1fff, 0x1fff, 0x1fff};
+    const unsigned short win_ranks[DDS_SUITS] = {1u << 12, 0, 0, 0};
+    NodeCards cards{};
+    cards.upper_bound = 13;
+    for (unsigned i = 0; i < 300; ++i) {
+        int hand_dist[DDS_HANDS];
+        for (int h = 0; h < DDS_HANDS; ++h)
+            hand_dist[h] = static_cast<int>((i * 2654435761u * static_cast<unsigned>(h + 1)) & 0xfffu);
+        bool lower_flag = false;
+        (void)tt->lookup(1 + static_cast<int>(i % 12), 0, aggr, hand_dist, -1, lower_flag);
+        tt->add(1 + static_cast<int>(i % 12), 0, aggr, win_ranks, cards, true);
+    }
+    EXPECT_EQ(tt->node_count(), 300u);
 }
 
 TEST(ConfigureTtApiTest, SwitchingToPatternRecreatesAndResizingKeepsInstance)

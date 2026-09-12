@@ -43,6 +43,11 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
   carries `tt_kind_` (`TTKind::{Small,Large,Pattern}`, default `Pattern`) and default/max MB.
   `configure_tt(kind, defMB, maxMB)` persists a new config and applies it to an
   existing TT (resize in place, or recreate if the *effective* kind changes).
+  Non-positive limits are resolved the same way in both `configure_tt` and lazy
+  creation, one value at a time: an unset maximum becomes the built-in limit
+  and an unset default becomes the built-in default capped by the maximum, so a
+  maximum-only configuration keeps its cap and a live table is never handed a
+  zero maximum.
   Env overrides: `DDS_TT_KIND=small|large|pattern` **replaces** the configured
   kind (at creation and in `configure_tt`'s recreate decision); when > 0,
   `DDS_TT_LIMIT_MB` caps the maximum (at creation and on every `configure_tt`),
@@ -68,7 +73,12 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
   because it only checks whether `tt_` is non-null — the next `lookup`/`add`
   read freed memory. `clear_tt()` and `dispose_trans_table()` now differ only in
   their log/stats trace. Guarded by `//library/tests:dds_c_api_test`
-  (`DdsCApiTtConfiguration.ClearTtThenSolveOnDefaultTt`).
+  (`DdsCApiTtConfiguration.ClearTtThenSolveOnDefaultTt`). Disposing also
+  forgets the deal the thread remembers (`ThreadData::suit`), so the next solve
+  — even of the same cards — is treated as a new deal and runs
+  `SetDealTables()`, which `init()`s the replacement table; otherwise a table
+  recreated between two solves of one deal would never see the deal (inert on
+  `TransTableP`). Guarded by `ConfigureTtApiTest.ATableRecreatedBetweenSolvesOfTheSameDealIsInitialisedAgain`.
 - **Hot-path facades are value-typed and inline-friendly, with different holds.**
   `MoveGenContext` holds a raw `ThreadData*` so `move_gen()` can return a
   value-typed facade without an atomic `shared_ptr` bump on every call.

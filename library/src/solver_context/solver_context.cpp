@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -56,6 +57,18 @@ auto make_trans_table(TTKind kind) -> std::unique_ptr<TransTable>
         case TTKind::Large: break;
     }
     return std::make_unique<TransTableL>();
+}
+
+/// Replaces non-positive limits with the built-in THREADMEM_* values, one at
+/// a time: an unset maximum gets the built-in limit, and an unset default gets
+/// the built-in default capped by the (possibly explicit) maximum, so that a
+/// maximum-only configuration keeps its cap.
+auto fill_unset_limits(const TTKind kind, int& defMB, int& maxMB) -> void
+{
+    const int builtin_def = kind == TTKind::Small ? THREADMEM_SMALL_DEF_MB : THREADMEM_LARGE_DEF_MB;
+    const int builtin_max = kind == TTKind::Small ? THREADMEM_SMALL_MAX_MB : THREADMEM_LARGE_MAX_MB;
+    if (maxMB <= 0) maxMB = builtin_max;
+    if (defMB <= 0) defMB = std::min(builtin_def, maxMB);
 }
 
 #if defined(DDS_TOP_LEVEL) || defined(DDS_AB_STATS) || defined(DDS_AB_HITS) || \
@@ -112,14 +125,7 @@ auto SolverContext::SearchContext::trans_table() -> TransTable* {
   TTKind kind = tt_kind_from_environment(owner_ ? owner_->config().tt_kind_ : SolverConfig{}.tt_kind_);
   int defMB = (owner_ ? owner_->config().tt_mem_default_mb_ : 0);
   int maxMB = (owner_ ? owner_->config().tt_mem_maximum_mb_ : 0);
-  // Final fallback to THREADMEM_* constants, one value at a time: an unset
-  // maximum gets the built-in limit, and an unset default gets the built-in
-  // default capped by the (possibly explicit) maximum, so that a
-  // maximum-only configuration keeps its cap.
-  const int builtin_def = kind == TTKind::Small ? THREADMEM_SMALL_DEF_MB : THREADMEM_LARGE_DEF_MB;
-  const int builtin_max = kind == TTKind::Small ? THREADMEM_SMALL_MAX_MB : THREADMEM_LARGE_MAX_MB;
-  if (maxMB <= 0) maxMB = builtin_max;
-  if (defMB <= 0) defMB = std::min(builtin_def, maxMB);
+  fill_unset_limits(kind, defMB, maxMB);
   // Optional environment overrides
   if (const char* s = std::getenv("DDS_TT_DEFAULT_MB")) {
     int v = std::atoi(s);
@@ -180,6 +186,10 @@ auto SolverContext::dispose_trans_table() const -> void
 #endif
   // Dispose the member-owned TT (if any)
   const_cast<SolverContext*>(this)->search_.dispose_trans_table();
+  // A replacement table has not seen the current deal. Forget the deal the
+  // thread remembers so the next solve treats it as new and runs
+  // SetDealTables(), which init()s the table, even for the same cards.
+  if (thr_) std::memset(thr_->suit, 0, sizeof(thr_->suit));
 }
 
 // Defaulted destructor defined out-of-line so destruction of the
@@ -269,6 +279,9 @@ auto SolverContext::resize_tt(int defMB, int maxMB) const -> void
 
 auto SolverContext::configure_tt(TTKind kind, int defMB, int maxMB) -> void
 {
+  // Unset limits resolve exactly as they would on lazy creation, so that an
+  // in-place resize never hands a live table a zero maximum.
+  fill_unset_limits(tt_kind_from_environment(kind), defMB, maxMB);
   // Apply environment limit if present to preserve existing behavior.
   if (const char* s = std::getenv("DDS_TT_LIMIT_MB")) {
     int v = std::atoi(s);

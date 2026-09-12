@@ -246,6 +246,17 @@ py_test(
     ],
 )
 
+# Integration: real_main/main must exit non-zero after the first mismatch.
+py_test(
+    name = "dtest_mismatch_exit_test",
+    size = "small",
+    srcs = ["test_dtest_mismatch_exit.py"],
+    main = "test_dtest_mismatch_exit.py",
+    data = [
+        ":dtest",
+    ],
+)
+
 cc_test(
     name = "loop_par_test",
     srcs = [

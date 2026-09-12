@@ -241,6 +241,7 @@ class TransTableP : public TransTable
     auto release_trees() -> void;
     auto delete_tree(PatternTree* tree) -> void;    ///< To the allocator (never allocates).
     auto delete_trees() -> void;
+    auto forget_lookups() -> void;
     auto free_spare_trees() -> void;
     static auto size_class(std::size_t capacity) -> int;
 

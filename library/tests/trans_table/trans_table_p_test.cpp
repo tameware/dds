@@ -832,6 +832,41 @@ TEST_F(TransTablePTest, PooledBlockPointerStorageCountsTowardsMemoryInUse)
     EXPECT_GT(tt_.memory_in_use(), before_kb);
 }
 
+/// A lookup() leaves behind the shape it resolved so that the following add()
+/// can reuse it. Anything that empties the table, or changes the deal, makes
+/// that remembered shape meaningless; an add() that arrives without a fresh
+/// lookup() afterwards must be ignored rather than filed under the old shape.
+TEST_F(TransTablePTest, AddWithoutAFreshLookupAfterAResetOrNewDealIsIgnored)
+{
+    const auto deal = TestDeal::rotating();
+    const auto pos = full_deal_position(deal);
+    const auto forget = [&](const char* how) {
+        if (how == std::string("reset")) tt_.reset_memory(ResetReason::NewDeal);
+        else if (how == std::string("make_tt")) tt_.make_tt();
+        else if (how == std::string("return_all_memory")) {
+            tt_.return_all_memory();
+            tt_.make_tt();
+            init(deal);
+        }
+        else init(deal);   // "init": a new deal on a live table
+    };
+    for (const char* how : {"reset", "make_tt", "return_all_memory", "init"}) {
+        // Arrange: a lookup() has remembered the shape of pos for trick 0 / hand 0.
+        tt_.make_tt();
+        init(deal);
+        bool lower_flag = false;
+        (void)lookup(pos, 0, 6, lower_flag);
+        forget(how);
+
+        // Act: add() without a lookup() in between.
+        tt_.add(pos.tricks, 0, pos.aggr, win("AK").ranks, node(7, 12), true);
+
+        // Assert
+        EXPECT_EQ(tt_.node_count(), 0u) << how;
+        EXPECT_EQ(tt_.shape_count(), 0u) << how;
+    }
+}
+
 TEST_F(TransTablePTest, ReturnAllMemoryLeavesNothingAllocated)
 {
     // Arrange: a table with patterns, pooled blocks and the ownership table.

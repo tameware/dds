@@ -95,6 +95,7 @@ auto TransTableP::init(const int hand_lookup[][15]) -> void
             }
         }
     }
+    forget_lookups();   // shapes remembered for the previous deal no longer apply
 }
 
 
@@ -131,6 +132,7 @@ auto TransTableP::make_tt() -> void
     delete_trees();
     free_spare_trees();
     shapes_.assign(InitialShapes, ShapeSlot{});
+    forget_lookups();
 }
 
 
@@ -153,6 +155,7 @@ auto TransTableP::reset_memory(const ResetReason reason) -> void
     // reset never allocates on top of the storage it is about to drop.
     std::vector<ShapeSlot>().swap(shapes_);
     shapes_.resize(InitialShapes);
+    forget_lookups();
 }
 
 
@@ -162,6 +165,17 @@ auto TransTableP::return_all_memory() -> void
     free_spare_trees();
     std::vector<ShapeSlot>().swap(shapes_);
     std::vector<Ownership>().swap(ownership_);   // init() rebuilds it per deal
+    forget_lookups();
+}
+
+
+auto TransTableP::forget_lookups() -> void
+{
+    // The shape a lookup() resolved is only valid for the following add()
+    // while the table and the deal it was resolved against still exist;
+    // an add() arriving after that without a fresh lookup() must be ignored.
+    std::memset(last_key_, 0, sizeof(last_key_));
+    std::memset(last_slot_, 0, sizeof(last_slot_));
 }
 
 
@@ -352,12 +366,14 @@ auto TransTableP::release_tree(PatternTree* tree) -> void
 {
     auto& spares = spare_trees_[size_class(tree->capacity)];
     if (spares.size() == spares.capacity()) {
-        // The pool's pointer storage counts against the budget too. If
-        // growing it would breach the cap, the block goes back to the
-        // allocator instead of the pool.
+        // The pool's pointer storage counts against the budget too. Growing
+        // it allocates the whole replacement buffer while the old one (already
+        // in dynamic_bytes()) is still live, so that full size is what must
+        // fit under the cap; otherwise the block goes back to the allocator
+        // instead of the pool.
         const std::size_t grown = std::max<std::size_t>(4, 2 * spares.capacity());
-        const std::size_t growth = (grown - spares.capacity()) * sizeof(PatternTree*);
-        if (dynamic_bytes() + growth > maximum_bytes_) {
+        const std::size_t replacement = grown * sizeof(PatternTree*);
+        if (dynamic_bytes() + replacement > maximum_bytes_) {
             delete_tree(tree);
             return;
         }

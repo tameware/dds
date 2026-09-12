@@ -76,6 +76,14 @@ its three concrete strategies, trading memory against speed.
   (so `set_memory_maximum(1)` alone really caps at 1 MB), and an unset maximum
   falls back to `THREADMEM_LARGE_MAX_MB`. Env overrides: `DDS_TT_DEFAULT_MB` /
   `DDS_TT_LIMIT_MB`.
+- **`init()` does not clear entries, by design.** Entries are statements about
+  *positions* (shape plus owners of the relevant relative-rank cards), and a
+  position's value does not depend on the deal it arose in. The solver relies on
+  this: for a "similar" deal (`solver_if.cpp`, `SIMILARDEALLIMIT`) it skips
+  `reset_memory()` and only re-runs `init()`, so entries carry over and keep
+  matching on the relevant cards alone — on `TransTableP` exactly as on
+  `TransTableL`. Guarded by
+  `TransTablePTest.PatternsSurviveASimilarDealAndStillHingeOnTheRelevantCards`.
 - **Resets are reason-tagged and tiered.** `reset_memory(ResetReason)` clears
   cached positions and bumps the per-reason reset counters — it does **not** clear
   statistics, which accumulate across resets by design — but retains the allocated

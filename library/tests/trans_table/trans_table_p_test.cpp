@@ -486,6 +486,34 @@ TEST_F(TransTablePTest, WholeSuitAndTopTwelveShareAnEntryThatKeepsTheWholeSuit)
     }
 }
 
+/// A pattern is a statement about positions - this shape, these owners of the
+/// relevant cards - and a position's value does not depend on which deal it
+/// came from. The solver relies on that: for a "similar" deal it re-runs
+/// init() without resetting the table (as with TransTableL). Entries must
+/// therefore survive init() and keep hinging on the relevant cards only.
+TEST_F(TransTablePTest, PatternsSurviveASimilarDealAndStillHingeOnTheRelevantCards)
+{
+    // Arrange: only the spade ace is relevant; the deals below share a shape.
+    const auto original = TestDeal::from_owners("NESWNESWNESWN", "NESWNESWNESWN", "NESWNESWNESWN", "NESWNESWNESWN");
+    const auto low_cards_swapped = TestDeal::from_owners("NESWNESWNESNW", "NESWNESWNESWN", "NESWNESWNESWN", "NESWNESWNESWN");
+    const auto ace_moved = TestDeal::from_owners("ENSWNESWNESWN", "NESWNESWNESWN", "NESWNESWNESWN", "NESWNESWNESWN");
+    init(original);
+    store(full_deal_position(original), 0, win("A"), node(7, 12));
+
+    // Act
+    init(low_cards_swapped);
+    bool lower_flag = false;
+    NodeCards const* similar_hit = lookup(full_deal_position(low_cards_swapped), 0, 6, lower_flag);
+    init(ace_moved);
+    NodeCards const* moved_ace = lookup(full_deal_position(ace_moved), 0, 6, lower_flag);
+
+    // Assert
+    ASSERT_NE(similar_hit, nullptr);
+    EXPECT_EQ(static_cast<int>(similar_hit->lower_bound), 7);
+    EXPECT_EQ(static_cast<int>(similar_hit->upper_bound), 12);
+    EXPECT_EQ(moved_ace, nullptr);
+}
+
 TEST_F(TransTablePTest, ReAddingTheSamePatternIntersectsBounds)
 {
     // Arrange

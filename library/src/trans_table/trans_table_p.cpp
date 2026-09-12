@@ -646,6 +646,13 @@ auto TransTableP::tighten(NodeCards& stored, const NodeCards& cards, const bool 
 {
     stored.lower_bound = std::max(stored.lower_bound, cards.lower_bound);
     stored.upper_bound = std::min(stored.upper_bound, cards.upper_bound);
+    // Identical keys imply identical relevant-card counts, except that a
+    // whole suit (13) and its top twelve share a key: the thirteenth card's
+    // owner is implied by the shape. Keep the larger count so the entry never
+    // under-reports the winning cards that some store recorded.
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        stored.least_win[s] = std::max(stored.least_win[s], cards.least_win[s]);
+    }
     if (flag) {
         stored.best_move_suit = cards.best_move_suit;
         stored.best_move_rank = cards.best_move_rank;

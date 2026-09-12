@@ -456,6 +456,34 @@ TEST_F(TransTablePTest, LeastWinEncodesLowestRelevantRankPerSuit)
 // Bounds merging, best move, subsumption and deduplication
 // ---------------------------------------------------------------------------
 
+/// The key encodes the top twelve cards of a suit; the thirteenth's owner is
+/// implied by the shape, so "all 13 relevant" and "top 12 relevant" match
+/// exactly the same positions and share one entry. That entry must still
+/// report the full suit as winning if either store did, whatever the order.
+TEST_F(TransTablePTest, WholeSuitAndTopTwelveShareAnEntryThatKeepsTheWholeSuit)
+{
+    const auto deal = TestDeal::rotating();
+    const auto pos = full_deal_position(deal);
+    for (const bool whole_suit_first : {true, false}) {
+        // Arrange
+        tt_.reset_memory(ResetReason::NewDeal);
+        init(deal);
+        const WinRanks whole = win("2");   // lowest winner is the deuce: 13 relevant
+        const WinRanks top12 = win("3");   // lowest winner is the three: 12 relevant
+        store(pos, 0, whole_suit_first ? whole : top12, node(7, 12));
+
+        // Act
+        store(pos, 0, whole_suit_first ? top12 : whole, node(7, 12));
+        bool lower_flag = false;
+        NodeCards const* hit = lookup(pos, 0, 6, lower_flag);
+
+        // Assert
+        EXPECT_EQ(tt_.node_count(), 1u) << "whole_suit_first=" << whole_suit_first;
+        ASSERT_NE(hit, nullptr);
+        EXPECT_EQ(static_cast<int>(hit->least_win[0]), 13) << "whole_suit_first=" << whole_suit_first;
+    }
+}
+
 TEST_F(TransTablePTest, ReAddingTheSamePatternIntersectsBounds)
 {
     // Arrange

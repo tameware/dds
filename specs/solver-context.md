@@ -42,8 +42,11 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
 - **TT configuration is `SolverConfig` + optional env overrides.** `SolverConfig`
   carries `tt_kind_` (`TTKind::{Small,Large,Pattern}`, default `Pattern`) and default/max MB.
   `configure_tt(kind, defMB, maxMB)` persists a new config and applies it to an
-  existing TT (resize in place, or recreate if the kind changes).   Env overrides when > 0: `DDS_TT_DEFAULT_MB` **replaces** the configured default
-  MB; `DDS_TT_LIMIT_MB` caps the maximum.
+  existing TT (resize in place, or recreate if the *effective* kind changes).
+  Env overrides: `DDS_TT_KIND=small|large|pattern` **replaces** the configured
+  kind (at creation and in `configure_tt`'s recreate decision); when > 0,
+  `DDS_TT_DEFAULT_MB` **replaces** the configured default MB and
+  `DDS_TT_LIMIT_MB` caps the maximum.
 - **Explicit, tiered reset hooks** (no-ops when no TT exists yet):
   `reset_for_solve()` clears a subset of search state and resets TT memory
   (`ResetReason::FreeMemory`) while preserving the allocation for reuse;

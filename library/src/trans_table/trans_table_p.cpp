@@ -41,6 +41,8 @@
 #include <bit>
 #include <cstring>
 #include <new>
+#include <sstream>
+#include <string>
 
 #include <api/dds_constants.hpp>
 
@@ -119,9 +121,9 @@ auto TransTableP::set_memory_maximum(const int megabytes) -> void
 
 auto TransTableP::make_tt() -> void
 {
-    if (default_bytes_ == 0) {
-        default_bytes_ = static_cast<std::size_t>(THREADMEM_LARGE_DEF_MB) * MiB;
-    }
+    // Only the hard maximum matters to this table; the default limit merely
+    // floors it when the caller configured one. An unset default must not be
+    // replaced by a built-in value, or it would lift an explicit small cap.
     if (maximum_bytes_ == 0) {
         maximum_bytes_ = static_cast<std::size_t>(THREADMEM_LARGE_MAX_MB) * MiB;
     }
@@ -385,11 +387,13 @@ auto TransTableP::release_tree(PatternTree* tree) -> void
 
 auto TransTableP::release_trees() -> void
 {
+    // Every slot is vacated, key included, so the counts stay exact even if
+    // a caller kept the slot array instead of replacing it.
     for (ShapeSlot& slot : shapes_) {
         if (slot.tree) {
             release_tree(slot.tree);
-            slot.tree = nullptr;
         }
+        slot = ShapeSlot{};
     }
     shape_count_ = 0;
     node_count_ = 0;
@@ -739,10 +743,65 @@ auto TransTableP::print_entries_dist_and_cards(
     std::ofstream& fout,
     const int trick,
     const int hand,
-    const unsigned short /*aggr_target*/[],
+    const unsigned short aggr_target[],
     const int hand_dist[]) const -> void
 {
-    print_entries_dist(fout, trick, hand, hand_dist);
+    const std::size_t slot = find_shape(shape_key(trick, hand, hand_dist));
+    PatternTree const* tree = slot == NoSlot ? nullptr : shapes_[slot].tree;
+    const std::size_t total = tree ? tree->size : 0;
+
+    std::uint32_t set[PatternWords] = {};
+    if (!ownership_.empty()) {
+        position_set(aggr_target, set);
+    }
+    std::ostringstream lines;
+    std::size_t matched = 0;
+    for (std::size_t i = 0; i < total; ++i) {
+        const PatternNode& stored = (*tree)[i];
+        if (!matches(stored.key, set)) {
+            continue;
+        }
+        ++matched;
+        lines << "  [" << static_cast<int>(stored.cards.lower_bound) << ", "
+              << static_cast<int>(stored.cards.upper_bound) << "] least_win";
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            lines << ' ' << static_cast<int>(stored.cards.least_win[s]);
+        }
+        lines << ' ' << owners_of(stored.key) << " best move "
+              << static_cast<int>(stored.cards.best_move_suit) << '/'
+              << static_cast<int>(stored.cards.best_move_rank) << '\n';
+    }
+    fout << "Trick " << trick << " hand " << hand << ": " << total << " patterns, "
+         << matched << " match the cards\n" << lines.str();
+}
+
+
+auto TransTableP::owners_of(const PatternKey& key) -> std::string
+{
+    // Per suit, the owner of each relevant card from the top down, in the
+    // same layout position_set() uses: one byte per suit in each word, the
+    // top card of the word's four in the byte's high two bits.
+    static constexpr char suit_letter[DDS_SUITS] = {'S', 'H', 'D', 'C'};
+    static constexpr char seat_letter[DDS_HANDS] = {'N', 'E', 'S', 'W'};
+    std::string text;
+    for (int s = 0; s < DDS_SUITS; ++s) {
+        text += suit_letter[s];
+        text += ':';
+        bool any = false;
+        for (int card = 0; card < 4 * PatternWords; ++card) {
+            const PatternWord& word = key.word[card / 4];
+            const int bit = 24 - 8 * s + 6 - 2 * (card % 4);
+            if ((word.mask >> bit) & 3u) {
+                text += seat_letter[(word.set >> bit) & 3u];
+                any = true;
+            }
+        }
+        if (!any) {
+            text += '-';
+        }
+        text += ' ';
+    }
+    return text;
 }
 
 

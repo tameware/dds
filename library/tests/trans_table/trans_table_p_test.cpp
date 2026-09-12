@@ -12,7 +12,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <numeric>
+#include <sstream>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -867,6 +869,102 @@ TEST_F(TransTablePTest, AddWithoutAFreshLookupAfterAResetOrNewDealIsIgnored)
     }
 }
 
+/// An ordinary reset leaves no occupied shape slot behind: the same shapes
+/// are counted afresh on the next solve, so the load factor stays exact and
+/// the open-addressed table keeps growing when it should.
+TEST_F(TransTablePTest, RepeatedSolveAndResetCyclesRecountEveryShape)
+{
+    // Arrange: enough distinct shapes to make the shape table grow.
+    std::mt19937 rng(23);
+    const auto deal = TestDeal::random(rng);
+    init(deal);
+    std::vector<TestPosition> positions;
+    for (int i = 0; i < 3000; ++i) positions.push_back(random_position(deal, rng, 1 + (i % 12)));
+    std::size_t first_cycle_shapes = 0;
+
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        // Act: a solve's worth of stores, then the between-deals reset.
+        for (const auto& pos : positions) store(pos, 0, win("A"), node(0, 13));
+        if (cycle == 0) first_cycle_shapes = tt_.shape_count();
+
+        // Assert: every shape is counted again each cycle, none linger.
+        EXPECT_EQ(tt_.shape_count(), first_cycle_shapes) << "cycle " << cycle;
+        EXPECT_GT(tt_.shape_count(), 1000u);
+        tt_.reset_memory(ResetReason::NewDeal);
+        EXPECT_EQ(tt_.shape_count(), 0u) << "cycle " << cycle;
+        EXPECT_EQ(tt_.node_count(), 0u) << "cycle " << cycle;
+    }
+}
+
+/// Writes a diagnostic dump through the ofstream API and returns it as text.
+template <typename Dump>
+auto dumped(Dump&& dump) -> std::string
+{
+    const std::string path = ::testing::TempDir() + "/trans_table_p_dump.txt";
+    {
+        std::ofstream fout(path, std::ios::trunc);
+        dump(fout);
+    }
+    std::ifstream fin(path);
+    std::stringstream text;
+    text << fin.rdbuf();
+    return text.str();
+}
+
+/// The card-aware dump reports which of the shape's patterns match the given
+/// cards, and shows each match's bounds and the owners of its relevant cards.
+TEST_F(TransTablePTest, CardAwareDumpListsOnlyThePatternsMatchingTheCards)
+{
+    // Arrange: two one-trick-played positions of the same shape whose top
+    // spades have different owners (A=N K=E ... versus T=E 9=N ...).
+    const auto deal = TestDeal::from_owners("NESWENSWNESWN", "NESWNESWNESWN", "ESWNESWNESWNE", "SWNESWNESWNES");
+    init(deal);
+    const auto low_spades_played = TestPosition::remaining(deal, "AKQJT9876", AllRanks, AllRanks, AllRanks);
+    const auto high_spades_played = TestPosition::remaining(deal, "T98765432", AllRanks, AllRanks, AllRanks);
+    ASSERT_EQ(low_spades_played.tricks, high_spades_played.tricks);
+    ASSERT_TRUE(std::equal(std::begin(low_spades_played.hand_dist), std::end(low_spades_played.hand_dist),
+                           std::begin(high_spades_played.hand_dist)));
+    store(low_spades_played, 0, win("AK"), node(3, 9));
+    store(low_spades_played, 0, win("AKQ"), node(4, 8));
+
+    // Act
+    const auto same_cards = dumped([&](std::ofstream& f) {
+        tt_.print_entries_dist_and_cards(f, low_spades_played.tricks, 0, low_spades_played.aggr, low_spades_played.hand_dist);
+    });
+    const auto other_cards = dumped([&](std::ofstream& f) {
+        tt_.print_entries_dist_and_cards(f, high_spades_played.tricks, 0, high_spades_played.aggr, high_spades_played.hand_dist);
+    });
+
+    // Assert
+    EXPECT_NE(same_cards.find("2 patterns"), std::string::npos) << same_cards;
+    EXPECT_NE(same_cards.find("2 match the cards"), std::string::npos) << same_cards;
+    EXPECT_NE(same_cards.find("[3, 9]"), std::string::npos) << same_cards;
+    EXPECT_NE(same_cards.find("[4, 8]"), std::string::npos) << same_cards;
+    EXPECT_NE(same_cards.find("S:NE "), std::string::npos) << same_cards;
+    EXPECT_NE(same_cards.find("S:NES "), std::string::npos) << same_cards;
+    EXPECT_NE(other_cards.find("2 patterns"), std::string::npos) << other_cards;
+    EXPECT_NE(other_cards.find("0 match the cards"), std::string::npos) << other_cards;
+    EXPECT_EQ(other_cards.find("[3, 9]"), std::string::npos) << other_cards;
+}
+
+/// An unknown shape is reported as such rather than as an empty match list.
+TEST_F(TransTablePTest, CardAwareDumpReportsAnUnknownShape)
+{
+    // Arrange
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+
+    // Act
+    const auto text = dumped([&](std::ofstream& f) {
+        tt_.print_entries_dist_and_cards(f, pos.tricks, 0, pos.aggr, pos.hand_dist);
+    });
+
+    // Assert
+    EXPECT_NE(text.find("0 patterns"), std::string::npos) << text;
+    EXPECT_NE(text.find("0 match the cards"), std::string::npos) << text;
+}
+
 TEST_F(TransTablePTest, ReturnAllMemoryLeavesNothingAllocated)
 {
     // Arrange: a table with patterns, pooled blocks and the ownership table.
@@ -991,6 +1089,31 @@ TEST(TransTablePMemoryTest, PoolingOutgrownBlocksNeverExceedsTheMaximum)
         ASSERT_LE(tt.memory_in_use(), cap_kb) << "after add " << i;
     }
     EXPECT_GT(max_shapes, 4000u) << "not enough blocks to make pooling costly";
+}
+
+/// A caller that configures only the hard maximum gets exactly that maximum;
+/// the unset default limit must not be replaced by a built-in value that then
+/// floors the cap far above what was asked for.
+TEST(TransTablePMemoryTest, AMaximumSetWithoutADefaultIsHonouredAsTheCap)
+{
+    // Arrange
+    TransTableP tt;
+    tt.set_memory_maximum(1);   // 1 MiB, no set_memory_default()
+    tt.make_tt();
+    std::mt19937 rng(31);
+    const auto deal = TestDeal::random(rng);
+    tt.init(deal.hand_lookup);
+    const double cap_kb = tt.memory_in_use() + 1024.0;
+
+    // Act & Assert: several MiB worth of entries never lift the footprint above the cap.
+    for (int i = 0; i < 20000; ++i) {
+        const auto pos = random_position(deal, rng, 1 + (i % 12));
+        const auto w = random_win_ranks(pos, rng);
+        bool lower_flag = false;
+        (void)tt.lookup(pos.tricks, 0, pos.aggr, pos.hand_dist, -1, lower_flag);
+        tt.add(pos.tricks, 0, pos.aggr, w.ranks, node(0, 13), true);
+        ASSERT_LE(tt.memory_in_use(), cap_kb) << "after add " << i;
+    }
 }
 
 TEST(TransTablePMemoryTest, LoweringTheMaximumWhileStillWithinItKeepsTheContents)

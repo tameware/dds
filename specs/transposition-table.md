@@ -68,7 +68,10 @@ its three concrete strategies, trading memory against speed.
   page. Treat `0` as unsupported rather than unlimited. It does not arise on the
   production path: the owning [solver-context](solver-context.md) replaces `<= 0`
   config values with `THREADMEM_*` constants before construct. (Reconciling the
-  header's doxygen is out of scope here.) Env overrides: `DDS_TT_DEFAULT_MB` /
+  header's doxygen is out of scope here.) On `TransTableP` only the maximum is a
+  limit: an explicitly set default merely floors it, an unset default is ignored
+  (so `set_memory_maximum(1)` alone really caps at 1 MB), and an unset maximum
+  falls back to `THREADMEM_LARGE_MAX_MB`. Env overrides: `DDS_TT_DEFAULT_MB` /
   `DDS_TT_LIMIT_MB`.
 - **Resets are reason-tagged and tiered.** `reset_memory(ResetReason)` clears
   cached positions and bumps the per-reason reset counters — it does **not** clear
@@ -123,4 +126,7 @@ its three concrete strategies, trading memory against speed.
 - The table does not choose its own size strategy — kind and limits are dictated
   by the owning [solver-context](solver-context.md) / config, not decided internally.
 - Print/diagnostic methods are for offline analysis and emit only under the
-  relevant debug builds; they are not part of the hot path.
+  relevant debug builds; they are not part of the hot path. On `TransTableP`,
+  `print_entries_dist_and_cards` lists, for the position's shape, how many
+  patterns exist and which of them match the given cards (bounds, `least_win`,
+  the owners of the relevant cards per suit, best move).

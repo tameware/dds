@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <string>
 #include <vector>
 
 #include <trans_table/trans_table.hpp>
@@ -226,6 +227,7 @@ class TransTableP : public TransTable
     static auto matches(const PatternKey& pattern, const std::uint32_t set[]) -> bool;
     static auto weight_of(const PatternKey& key) -> std::uint32_t;
     static auto bucket_of(const PatternKey& key) -> int;
+    static auto owners_of(const PatternKey& key) -> std::string;
 
     auto position_set(const unsigned short aggr_target[], std::uint32_t set[]) const -> void;
     auto make_pattern(

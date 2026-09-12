@@ -154,8 +154,12 @@ class TransTable
 
     /// \brief Clear the transposition table and reset memory/statistics.
     ///
-    /// Removes all cached positions and resets internal statistics. The memory
-    /// structures are retained for reuse.
+    /// Removes all cached positions and bumps the per-reason reset counters
+    /// (other statistics accumulate across resets). The memory structures are
+    /// retained for reuse, with one exception: on TransTableP a
+    /// ResetReason::MemoryExhausted reset returns the pattern blocks (in use
+    /// and pooled) to the allocator, since pooling them could itself allocate
+    /// while over budget; the table then regrows on demand.
     ///
     /// \param reason The reason this reset was triggered
     virtual auto reset_memory(ResetReason reason) -> void = 0;

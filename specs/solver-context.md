@@ -45,8 +45,10 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
   existing TT (resize in place, or recreate if the *effective* kind changes).
   Env overrides: `DDS_TT_KIND=small|large|pattern` **replaces** the configured
   kind (at creation and in `configure_tt`'s recreate decision); when > 0,
-  `DDS_TT_DEFAULT_MB` **replaces** the configured default MB and
-  `DDS_TT_LIMIT_MB` caps the maximum.
+  `DDS_TT_LIMIT_MB` caps the maximum (at creation and on every `configure_tt`),
+  and `DDS_TT_DEFAULT_MB` **replaces** the configured default MB only when a
+  table is created (lazily, or on `configure_tt`'s recreate path) — an in-place
+  resize applies the explicit `defMB` as given.
 - **Explicit, tiered reset hooks** (no-ops when no TT exists yet):
   `reset_for_solve()` clears a subset of search state and resets TT memory
   (`ResetReason::FreeMemory`) while preserving the allocation for reuse;

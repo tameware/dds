@@ -65,13 +65,12 @@ its three concrete strategies, trading memory against speed.
   freed). The fixed per-deal card-ownership table built by `init()` (~384 KB,
   plus a similar transient during the build) is reported by `memory_in_use()`
   but is not charged against the maximum.
-  The header documents `0` as "unlimited" for the default limit, but `TransTableL`
-  does not implement it that way — `set_memory_default(0)` yields
+  `0` is **unsupported** for the default limit, not "unlimited" (and the
+  `set_memory_default` doxygen says so): on `TransTableL` it yields
   `pages_default_ == 0`, and the next `reset_memory` then frees *every* pooled
-  page. Treat `0` as unsupported rather than unlimited. It does not arise on the
-  production path: the owning [solver-context](solver-context.md) replaces `<= 0`
-  config values with `THREADMEM_*` constants before construct. (Reconciling the
-  header's doxygen is out of scope here.) On `TransTableP` only the maximum is a
+  page. It does not arise on the production path: the owning
+  [solver-context](solver-context.md) replaces `<= 0` config values with
+  `THREADMEM_*` constants before construct. On `TransTableP` only the maximum is a
   limit: an explicitly set default merely floors it, an unset default is ignored
   (so `set_memory_maximum(1)` alone really caps at 1 MB), and an unset maximum
   falls back to `THREADMEM_LARGE_MAX_MB`. Env overrides: `DDS_TT_DEFAULT_MB` /

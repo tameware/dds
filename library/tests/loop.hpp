@@ -16,7 +16,7 @@
 
 /// @file loop.hpp
 /// @brief Main test loop implementations for DDS solver testing.
-/// 
+///
 /// Executes test loops for various solver operations (solve, calc,
 /// par score, play tracing) over sets of deals.
 
@@ -29,14 +29,15 @@
 /// @param stepsize Boards per solve batch (typically `MAXNOOFBOARDS`)
 /// @param board_times When non-null, appends per-deal timings for every batch
 ///        with file-relative board indices (for `dtest -r`)
-void loop_solve(
+/// @return false on DDS API fault or first expected-result mismatch
+auto loop_solve(
     BoardsPBN * bop,
     SolvedBoards * solvedbdp,
     DealPBN * deal_list,
     FutureTricks * fut_list,
     const int number,
     const int stepsize,
-    std::vector<std::pair<int, int>>* board_times = nullptr);
+    std::vector<std::pair<int, int>>* board_times = nullptr) -> bool;
 
 /// Calculate loop: CalcAllTablesPBNX for the full deal list in one parallel job.
 /// Allocates its own flat deal/result buffers (unbounded X API); no legacy
@@ -44,30 +45,34 @@ void loop_solve(
 /// @param deal_list Input deals in PBN format
 /// @param table_list Expected DD table results
 /// @param number Number of deals in the test set
-bool loop_calc(
+/// @return false on DDS API fault or first expected-result mismatch
+auto loop_calc(
     DealPBN * deal_list,
     DdTableResults * table_list,
-    const int number);
+    const int number) -> bool;
 
 /// PAR loop: calculate PAR scores for multiple deals.
-bool loop_par(
+/// @return false on DDS API fault or first expected-result mismatch
+auto loop_par(
     int * vul_list,
     DdTableResults * table_list,
     ParResults * par_list,
     const int number,
-    const int stepsize);
+    const int stepsize) -> bool;
 
 /// Dealer PAR loop: calculate dealer PAR scores.
-bool loop_dealerpar(
+/// @return false on DDS API fault or first expected-result mismatch
+auto loop_dealerpar(
     int * dealer_list,
     int * vul_list,
     DdTableResults * table_list,
     ParResultsDealer * dealerpar_list,
     const int number,
-    const int stepsize);
+    const int stepsize) -> bool;
 
 /// Play loop: execute play_trace for multiple deals.
-bool loop_play(
+/// @return false on DDS API fault or first expected-result mismatch
+auto loop_play(
     BoardsPBN * bop,
     PlayTracesPBN * playsp,
     SolvedPlays * solvedplp,
@@ -75,4 +80,4 @@ bool loop_play(
     PlayTracePBN * play_list,
     SolvedPlay * trace_list,
     const int number,
-    const int stepsize);
+    const int stepsize) -> bool;

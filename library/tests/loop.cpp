@@ -60,11 +60,6 @@ auto loop_solve(
   const int stepsize,
   std::vector<std::pair<int, int>>* board_times) -> bool
 {
-#ifdef BATCHTIMES
-  cout << setw(8) << left << "Hand no." <<
-    setw(25) << right << "Time" << "\n";
-#endif
-
   for (int i = 0; i < number; i += stepsize)
   {
     int count = (i + stepsize > number ? number - i : stepsize);
@@ -92,6 +87,7 @@ auto loop_solve(
     }
     if (ret != RETURN_NO_FAULT)
     {
+      timer.finish_running();
       report_dds_error("loop_solve", ret);
       cout << "loop_solve: i " << i << "\n";
       return false;
@@ -114,6 +110,7 @@ auto loop_solve(
       if (compare_FUT(solvedbdp->solved_board[j], fut_list[i + j]))
         continue;
 
+      timer.finish_running();
       cout << "loop_solve: i " << i << ", j " << j << ": " <<
         "Difference\n\n";
       print_FUT(solvedbdp->solved_board[j]);
@@ -125,7 +122,7 @@ auto loop_solve(
   }
 
 #ifdef BATCHTIMES
-  cout << "\n";
+  timer.finish_running();
 #endif
 
   return true;
@@ -137,11 +134,6 @@ auto loop_calc(
   DdTableResults * table_list,
   const int number) -> bool
 {
-#ifdef BATCHTIMES
-  cout << setw(8) << left << "Hand no." <<
-    setw(25) << right << "Time" << "\n";
-#endif
-
   // One CalcAllTablesPBNX call for the whole file: expands to number×strains
   // boards and solves them in a single parallel job (ddss large-batch shape).
   int filter[DDS_STRAINS] = {0, 0, 0, 0, 0};
@@ -180,6 +172,7 @@ auto loop_calc(
     if (compare_TABLE(results[static_cast<unsigned>(j)], table_list[j]))
       continue;
 
+    timer.finish_running();
     cout << "loop_calc: j " << j << ": Difference\n\n";
     print_TABLE(results[static_cast<unsigned>(j)]);
     cout << "\n";
@@ -189,7 +182,7 @@ auto loop_calc(
   }
 
 #ifdef BATCHTIMES
-  cout << "\n";
+  timer.finish_running();
 #endif
 
   return true;
@@ -238,6 +231,7 @@ auto loop_par(
 
 #ifdef BATCHTIMES
   timer.print_running(number, number);
+  timer.finish_running();
 #endif
 
   return true;
@@ -286,6 +280,7 @@ auto loop_dealerpar(
 
 #ifdef BATCHTIMES
   timer.print_running(number, number);
+  timer.finish_running();
 #endif
 
   return true;
@@ -302,11 +297,6 @@ auto loop_play(
   const int number,
   const int stepsize) -> bool
 {
-#ifdef BATCHTIMES
-  cout << setw(8) << left << "Hand no." <<
-    setw(25) << right << "Time" << "\n";
-#endif
-
   for (int i = 0; i < number; i += stepsize)
   {
     int count = (i + stepsize > number ? number - i : stepsize);
@@ -341,6 +331,7 @@ auto loop_play(
     }
     if (ret != RETURN_NO_FAULT)
     {
+      timer.finish_running();
       report_dds_error("loop_play", ret);
       cout << "loop_play: i " << i << "\n";
       return false;
@@ -356,6 +347,7 @@ auto loop_play(
       if (compare_TRACE(solvedplp->solved[j], trace_list[i+j]))
         continue;
 
+      timer.finish_running();
       printf("loop_play i %d, j %d: Difference\n", i, j);
       cout << "loop_play: i " << i << ", j " << j << ": " <<
         "Difference\n\n";
@@ -366,7 +358,7 @@ auto loop_play(
   }
 
 #ifdef BATCHTIMES
-  printf("\n");
+  timer.finish_running();
 #endif
 
   return true;

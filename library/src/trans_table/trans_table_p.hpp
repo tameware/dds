@@ -37,7 +37,11 @@
 ///
 /// Memory grows on demand up to the configured maximum; when exhausted the
 /// whole table is cleared (\ref ResetReason::MemoryExhausted) and filling
-/// resumes.
+/// resumes. The maximum governs the cache storage (pattern blocks, the spare
+/// pool and the shape table, transients included). The fixed per-deal
+/// card-ownership table that `init()` builds (about 384 KB, plus a similar
+/// transient while building) is reported by `memory_in_use()` but not charged
+/// against the maximum.
 ///
 /// \par Lifecycle
 /// `make_tt()` creates an empty table; `init(hand_lookup)` then builds the

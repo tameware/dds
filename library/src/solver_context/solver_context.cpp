@@ -112,16 +112,14 @@ auto SolverContext::SearchContext::trans_table() -> TransTable* {
   TTKind kind = tt_kind_from_environment(owner_ ? owner_->config().tt_kind_ : SolverConfig{}.tt_kind_);
   int defMB = (owner_ ? owner_->config().tt_mem_default_mb_ : 0);
   int maxMB = (owner_ ? owner_->config().tt_mem_maximum_mb_ : 0);
-  // Final fallback to THREADMEM_* constants
-  if (defMB <= 0 || maxMB <= 0) {
-    if (kind == TTKind::Small) {
-      defMB = THREADMEM_SMALL_DEF_MB;
-      maxMB = THREADMEM_SMALL_MAX_MB;
-    } else {
-      defMB = THREADMEM_LARGE_DEF_MB;
-      maxMB = THREADMEM_LARGE_MAX_MB;
-    }
-  }
+  // Final fallback to THREADMEM_* constants, one value at a time: an unset
+  // maximum gets the built-in limit, and an unset default gets the built-in
+  // default capped by the (possibly explicit) maximum, so that a
+  // maximum-only configuration keeps its cap.
+  const int builtin_def = kind == TTKind::Small ? THREADMEM_SMALL_DEF_MB : THREADMEM_LARGE_DEF_MB;
+  const int builtin_max = kind == TTKind::Small ? THREADMEM_SMALL_MAX_MB : THREADMEM_LARGE_MAX_MB;
+  if (maxMB <= 0) maxMB = builtin_max;
+  if (defMB <= 0) defMB = std::min(builtin_def, maxMB);
   // Optional environment overrides
   if (const char* s = std::getenv("DDS_TT_DEFAULT_MB")) {
     int v = std::atoi(s);

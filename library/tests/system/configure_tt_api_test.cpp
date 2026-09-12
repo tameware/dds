@@ -109,6 +109,61 @@ TEST(ConfigureTtApiTest, PatternKindCreatesPatternTable)
     EXPECT_NE(nullptr, dynamic_cast<TransTableP*>(tt));
 }
 
+/// Prepares `tt` for a deal in which rank r of suit s belongs to seat (r + s) % 4.
+void init_rotating_deal(TransTable& tt)
+{
+    int hand_lookup[DDS_SUITS][15] = {};
+    for (int s = 0; s < DDS_SUITS; ++s)
+        for (int r = 2; r <= 14; ++r) hand_lookup[s][r] = (r + s) % DDS_HANDS;
+    tt.init(hand_lookup);
+}
+
+/// Fills a table with many distinct shapes and returns false as soon as its
+/// footprint exceeds `cap_kb`.
+auto stays_under(TransTable& tt, const double cap_kb) -> bool
+{
+    const unsigned short aggr[DDS_SUITS] = {0x1fff, 0x1fff, 0x1fff, 0x1fff};
+    const unsigned short win_ranks[DDS_SUITS] = {1u << 12, 0, 0, 0};
+    NodeCards cards{};
+    cards.upper_bound = 13;
+    for (unsigned i = 0; i < 20000; ++i) {
+        int hand_dist[DDS_HANDS];
+        for (int h = 0; h < DDS_HANDS; ++h)
+            hand_dist[h] = static_cast<int>((i * 2654435761u * static_cast<unsigned>(h + 1)) & 0xfffu);
+        const int tricks = 1 + static_cast<int>(i % 12);
+        bool lower_flag = false;
+        (void)tt.lookup(tricks, 0, aggr, hand_dist, -1, lower_flag);
+        tt.add(tricks, 0, aggr, win_ranks, cards, true);
+        if (tt.memory_in_use() > cap_kb) return false;
+    }
+    return true;
+}
+
+/// A configuration that sets only the maximum must yield a table capped at
+/// that maximum when it is created lazily; the built-in default used for the
+/// unset value may not lift the cap.
+TEST(ConfigureTtApiTest, AMaximumOnlyConfigurationIsHonouredOnLazyCreation)
+{
+    // Arrange
+    ScopedEnv no_kind("DDS_TT_KIND", nullptr);
+    ScopedEnv no_default("DDS_TT_DEFAULT_MB", nullptr);
+    ScopedEnv no_limit("DDS_TT_LIMIT_MB", nullptr);
+    SolverConfig cfg;
+    cfg.tt_kind_ = TTKind::Pattern;
+    cfg.tt_mem_default_mb_ = 0;
+    cfg.tt_mem_maximum_mb_ = 1;
+    SolverContext ctx(cfg);
+
+    // Act
+    TransTable* tt = ctx.trans_table();
+    ASSERT_NE(tt, nullptr);
+    init_rotating_deal(*tt);
+    const double cap_kb = tt->memory_in_use() + 1024.0;
+
+    // Assert
+    EXPECT_TRUE(stays_under(*tt, cap_kb));
+}
+
 TEST(ConfigureTtApiTest, SwitchingToPatternRecreatesAndResizingKeepsInstance)
 {
     // Arrange: start from the Large table, isolated from any ambient override.

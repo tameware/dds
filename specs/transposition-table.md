@@ -60,8 +60,11 @@ its three concrete strategies, trading memory against speed.
   rather than harvesting. The maximum is a hard cap that applies at once:
   `set_memory_maximum` on a live table already above the new limit clears it
   immediately rather than waiting for the next allocation, and it bounds the
-  peak footprint including transients (a pooled-block pointer buffer that is
-  being replaced counts twice until the old one is freed).
+  peak footprint of the cache storage including transients (a pooled-block
+  pointer buffer that is being replaced counts twice until the old one is
+  freed). The fixed per-deal card-ownership table built by `init()` (~384 KB,
+  plus a similar transient during the build) is reported by `memory_in_use()`
+  but is not charged against the maximum.
   The header documents `0` as "unlimited" for the default limit, but `TransTableL`
   does not implement it that way — `set_memory_default(0)` yields
   `pages_default_ == 0`, and the next `reset_memory` then frees *every* pooled

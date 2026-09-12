@@ -59,9 +59,10 @@ auto kind_of(const TransTable* tt) -> TTKind
 
 TEST(ConfigureTtApiTest, ScopedEnvRestoresThePreviousValueAndAbsence)
 {
-    // Arrange
+    // Arrange: a known outer value, itself scoped so that whatever the runner
+    // supplied is put back when the test ends.
     const char* name = "DDS_TEST_SCOPED_ENV";
-    set_env_var(name, "before");
+    ScopedEnv outer(name, "before");
 
     // Act & Assert: an override is undone, and so is a removal.
     {
@@ -74,9 +75,6 @@ TEST(ConfigureTtApiTest, ScopedEnvRestoresThePreviousValueAndAbsence)
         EXPECT_EQ(std::getenv(name), nullptr);
     }
     EXPECT_STREQ(std::getenv(name), "before");
-
-    set_env_var(name, nullptr);
-    EXPECT_EQ(std::getenv(name), nullptr);
 }
 
 TEST(ConfigureTtApiTest, DefaultConfigurationUsesThePatternTable)

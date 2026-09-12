@@ -48,7 +48,10 @@ the opaque handle. See [dds-public-api](dds-public-api.md).
   `DDS_TT_LIMIT_MB` caps the maximum (at creation and on every `configure_tt`),
   and `DDS_TT_DEFAULT_MB` **replaces** the configured default MB only when a
   table is created (lazily, or on `configure_tt`'s recreate path) — an in-place
-  resize applies the explicit `defMB` as given.
+  resize applies the explicit `defMB` as given. In both paths the maximum is
+  then floored to the effective default (`maxMB = max(maxMB, defMB)`), so
+  `DDS_TT_LIMIT_MB` cannot push the maximum below the default: to cap below the
+  built-in default, lower the default too (`DDS_TT_DEFAULT_MB` or `configure_tt`).
 - **Explicit, tiered reset hooks** (no-ops when no TT exists yet):
   `reset_for_solve()` clears a subset of search state and resets TT memory
   (`ResetReason::FreeMemory`) while preserving the allocation for reuse;

@@ -125,11 +125,14 @@ class TransTable
 
     /// \brief Set the default (soft) memory limit in megabytes.
     ///
-    /// The table will try to stay below this limit but may exceed it slightly
-    /// during search. When the limit is exceeded, the table may invoke cleanup
-    /// strategies like harvesting (in TransTableL).
+    /// TransTableL and TransTableS try to stay below this limit but may exceed
+    /// it slightly during search; when it is exceeded they may invoke cleanup
+    /// strategies like harvesting (TransTableL). TransTableP has no soft limit:
+    /// the value only floors the hard maximum at make_tt(), and 0 (unset) is
+    /// ignored there rather than treated as unlimited.
     ///
-    /// \param megabytes Desired soft memory limit in MB (0 = unlimited)
+    /// \param megabytes Desired soft memory limit in MB (0 = unlimited on L/S;
+    ///        see above for P)
     virtual auto set_memory_default(int megabytes) -> void = 0;
 
     /// \brief Set the maximum (hard) memory limit in megabytes.

@@ -762,6 +762,31 @@ TEST_F(TransTablePTest, ReturnAllMemoryThenMakeTtStartsFresh)
     EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
 }
 
+TEST_F(TransTablePTest, TableWithoutADealIsInertUntilInit)
+{
+    // Arrange: return_all_memory() drops the deal-specific ownership table,
+    // and make_tt() cannot rebuild it. Until init() runs again the table must
+    // neither crash nor store anything.
+    const auto deal = TestDeal::rotating();
+    init(deal);
+    const auto pos = full_deal_position(deal);
+    store(pos, 0, win("A"), node(7, 12));
+    tt_.return_all_memory();
+    tt_.make_tt();
+
+    // Act
+    bool lower_flag = false;
+    NodeCards const* hit = lookup(pos, 0, 6, lower_flag);
+    store(pos, 0, win("A"), node(7, 12));
+
+    // Assert: inert without a deal, fully usable once init() has run.
+    EXPECT_EQ(hit, nullptr);
+    EXPECT_EQ(tt_.node_count(), 0u);
+    init(deal);
+    store(pos, 0, win("A"), node(7, 12));
+    EXPECT_NE(lookup(pos, 0, 6, lower_flag), nullptr);
+}
+
 TEST_F(TransTablePTest, PooledBlockPointerStorageCountsTowardsMemoryInUse)
 {
     // Arrange: one shape with a full block and nothing pooled yet.
@@ -960,6 +985,65 @@ TEST_F(TransTablePTest, ReAddingAPatternToAFullTreeTightensInPlaceWithoutGrowing
 /// For workloads small enough that TransTableL never evicts, both tables must
 /// take identical cut decisions on every lookup. Bounds are generated to be
 /// consistent per (tricks, hand) so that intersections never become empty.
+/// Both tables must hand ab_search the same `least_win`: the number of cards
+/// at or above the lowest winning rank (what `win_ranks[aggr][least_win]`
+/// expects), not an absolute rank. Sparse winners (e.g. A and 9 remaining,
+/// 9 the lowest winner) are where a rank encoding and a count would differ.
+TEST(TransTablePEquivalenceTest, LeastWinMatchesTransTableLForTheSameStore)
+{
+    std::mt19937 rng(5);
+    const auto deal = TestDeal::random(rng);
+    TransTableL large;
+    large.set_memory_default(16);
+    large.set_memory_maximum(32);
+    large.make_tt();
+    large.init(deal.hand_lookup);
+    TransTableP pattern;
+    pattern.set_memory_default(16);
+    pattern.set_memory_maximum(32);
+    pattern.make_tt();
+    pattern.init(deal.hand_lookup);
+
+    int compared = 0;
+    for (int i = 0; i < 300; ++i) {
+        // Arrange: one position, one pattern, stored in both tables. The
+        // winning rank of each suit is a random remaining card, so the
+        // relevant cards are usually a sparse subset of the suit.
+        const auto pos = random_position(deal, rng, 1 + (i % 3));
+        WinRanks w;
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            if (pos.aggr[s] == 0 || (i + s) % 2 == 0) continue;
+            std::vector<int> bits;
+            for (int b = 0; b < 13; ++b)
+                if (pos.aggr[s] & (1u << b)) bits.push_back(b);
+            const int b = bits[std::uniform_int_distribution<size_t>(0, bits.size() - 1)(rng)];
+            w.ranks[s] = static_cast<unsigned short>(1u << b);
+        }
+        const int hand = i % DDS_HANDS;
+        bool lower = false;
+        if (large.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, 5, lower) != nullptr ||
+            pattern.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, 5, lower) != nullptr) {
+            continue;   // an earlier store already covers this position
+        }
+        large.add(pos.tricks, hand, pos.aggr, w.ranks, node(5, 5), true);
+        pattern.add(pos.tricks, hand, pos.aggr, w.ranks, node(5, 5), true);
+
+        // Act
+        NodeCards const* hit_l = large.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, 5, lower);
+        NodeCards const* hit_p = pattern.lookup(pos.tricks, hand, pos.aggr, pos.hand_dist, 5, lower);
+
+        // Assert
+        ASSERT_NE(hit_l, nullptr) << "step " << i;
+        ASSERT_NE(hit_p, nullptr) << "step " << i;
+        for (int s = 0; s < DDS_SUITS; ++s) {
+            EXPECT_EQ(static_cast<int>(hit_p->least_win[s]), static_cast<int>(hit_l->least_win[s]))
+                << "step " << i << " suit " << s;
+        }
+        ++compared;
+    }
+    EXPECT_GT(compared, 100);
+}
+
 TEST(TransTablePEquivalenceTest, CutDecisionsMatchTransTableLOnSmallWorkloads)
 {
     for (unsigned seed = 1; seed <= 12; ++seed) {

@@ -38,6 +38,15 @@
 /// whole table is cleared (\ref ResetReason::MemoryExhausted) and filling
 /// resumes.
 ///
+/// \par Lifecycle
+/// `make_tt()` creates an empty table; `init(hand_lookup)` then builds the
+/// deal-specific card-ownership table, which patterns are derived from.
+/// `return_all_memory()` releases both, so after `return_all_memory();
+/// make_tt();` a further `init()` is required before anything can be stored;
+/// until then the table is inert (lookups miss, adds are ignored). The
+/// production context calls `init()` for every deal, so this only matters to
+/// standalone users.
+///
 /// \par Thread Safety
 /// Not thread-safe. Must be accessed from a single thread.
 class TransTableP : public TransTable

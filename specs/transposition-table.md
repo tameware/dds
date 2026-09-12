@@ -73,7 +73,13 @@ its three concrete strategies, trading memory against speed.
   statistics, which accumulate across resets by design — but retains the allocated
   structures for reuse;
   `return_all_memory()` deallocates everything and the table **must** be
-  re-created with `make_tt()` before further use — `init()` does not reallocate.
+  re-created with `make_tt()` before further use — on `TransTableL`/`S`,
+  `init()` does not reallocate. `TransTableP` differs: its `init(hand_lookup)`
+  builds the deal-specific ownership table that patterns are derived from, and
+  `return_all_memory()` releases it too, so after `return_all_memory();
+  make_tt();` an `init()` is required before anything can be stored. Until
+  then the table is inert (lookups miss, adds are ignored) rather than
+  undefined. The production path always runs `init()` per deal.
   `TransTableP` refines the "retains structures" rule by reason: an ordinary
   reset returns its pattern blocks to a per-size-class pool for reuse, whereas a
   `MemoryExhausted` reset (including the one triggered by lowering the maximum)

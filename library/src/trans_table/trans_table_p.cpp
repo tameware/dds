@@ -580,7 +580,10 @@ auto TransTableP::add(
     const NodeCards& first,
     const bool flag) -> void
 {
-    if (shapes_.empty() || trick < 0 || trick >= MaxTricks) {
+    // Without a deal (no init() since make_tt()/return_all_memory()) there is
+    // no ownership table to build patterns from; the table stays empty, which
+    // also keeps lookup() off position_set().
+    if (shapes_.empty() || ownership_.empty() || trick < 0 || trick >= MaxTricks) {
         return;
     }
     const std::uint64_t key = last_key_[trick][hand];

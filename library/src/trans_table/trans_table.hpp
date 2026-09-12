@@ -57,7 +57,11 @@ struct NodeCards // 8 bytes
   char lower_bound;     ///< Minimum tricks for side to move at this node (0-13)
   char best_move_suit;  ///< Optimal suit index (0=S, 1=H, 2=D, 3=C; matches card_suit)
   char best_move_rank;  ///< Absolute rank (2-14 for 2-A), 0 used as sentinel
-  char least_win[DDS_SUITS]; ///< Encoded lowest winning rank (0-13), used as 15 - least_win
+  char least_win[DDS_SUITS]; ///< Per suit, the number (0-13) of remaining cards at or
+                             ///< above the lowest winning rank; ab_search feeds it to
+                             ///< win_ranks[aggr][least_win] to recover those cards. Not
+                             ///< an absolute rank: 15 - least_win is the *relative* rank
+                             ///< of the lowest such card, as the dump routines print it.
 };
 
 #ifdef _MSC_VER
